@@ -625,7 +625,7 @@ async function step4_mcp() {
       await run('xcopy', [bundledMcp, dest, '/E', '/I', '/Y', '/Q'], { ignoreError: false });
     } else {
       if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
-      await run('cp', ['-r', bundledMcp + '/.', dest], { ignoreError: false });
+      await run('cp', ['-r', `"${bundledMcp}/."`, `"${dest}"`], { ignoreError: false });
     }
   } else {
     sendLog('tradingview-mcp già presente');
