@@ -26,6 +26,12 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Setup bundled-mcp
+        run: |
+          git clone https://github.com/tradesdontlie/tradingview-mcp bundled-mcp
+          cd bundled-mcp
+          npm install
+
       - name: Install dependencies
         run: npm install
 
