@@ -1,4 +1,4 @@
-name: Build Installer
+name: Build Windows EXE
 
 on:
   push:
@@ -16,57 +16,22 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Setup bundled-mcp
+        run: |
+          git clone https://github.com/LewisWJackson/tradingview-mcp-jackson bundled-mcp
+          cd bundled-mcp
+          npm install
+
       - name: Install dependencies
         run: npm install
 
-      - name: Build Windows .exe
+      - name: Build Windows EXE
         run: npm run dist-win
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
-      - name: Upload .exe
+      - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
           name: installer-windows
           path: dist/*.exe
-
-  build-mac:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Download bundled Node binaries
-        run: |
-          mkdir -p bundled-node
-          curl -L https://nodejs.org/dist/v20.19.1/node-v20.19.1-darwin-arm64.tar.gz -o /tmp/node-arm64.tar.gz
-          tar -xzf /tmp/node-arm64.tar.gz -C /tmp
-          cp /tmp/node-v20.19.1-darwin-arm64/bin/node bundled-node/node-arm64
-          cp /tmp/node-v20.19.1-darwin-arm64/bin/npm bundled-node/npm
-          cp -r /tmp/node-v20.19.1-darwin-arm64/lib/node_modules bundled-node/node_modules_npm
-          curl -L https://nodejs.org/dist/v20.19.1/node-v20.19.1-darwin-x64.tar.gz -o /tmp/node-x64.tar.gz
-          tar -xzf /tmp/node-x64.tar.gz -C /tmp
-          cp /tmp/node-v20.19.1-darwin-x64/bin/node bundled-node/node-x64
-          chmod +x bundled-node/node-arm64 bundled-node/node-x64 bundled-node/npm
-
-      - name: Install bundled-mcp dependencies
-        run: |
-          cd bundled-mcp && npm install
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build Mac .dmg
-        run: npm run dist-mac
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-
-      - name: Upload .dmg
-        uses: actions/upload-artifact@v4
-        with:
-          name: installer-mac
-          path: dist/*.dmg
