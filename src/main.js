@@ -25,25 +25,6 @@ const LICENSE_FILE = path.join(app.getPath('userData'), 'lic.dat');
 const SALT         = 'TV2CLAUDE2026';
 const APP_VERSION  = '1.0.0';
 
-// ── NODE BUNDLED ──────────────────────────────────────────────
-// Ritorna il percorso del binario Node bundled nell'app
-function getBundledNode() {
-  const arch = os.arch(); // 'arm64' o 'x64'
-  const nodeFile = arch === 'arm64' ? 'node-arm64' : 'node-x64';
-  const bundledDir = app.isPackaged
-    ? path.join(process.resourcesPath, 'bundled-node')
-    : path.join(__dirname, '..', 'bundled-node');
-  return path.join(bundledDir, nodeFile);
-}
-
-// Ritorna il percorso di npm bundled
-function getBundledNpm() {
-  const bundledDir = app.isPackaged
-    ? path.join(process.resourcesPath, 'bundled-node')
-    : path.join(__dirname, '..', 'bundled-node');
-  return path.join(bundledDir, 'npm');
-}
-
 let mainWindow;
 
 // ── FINESTRA PRINCIPALE ───────────────────────────────────────
@@ -118,9 +99,8 @@ function run(cmd, args = [], opts = {}) {
   const { ignoreError = false, cwd, ...spawnOpts } = opts;
   return new Promise((resolve, reject) => {
     const env = { ...process.env, ...buildWinPath() };
-    // shell:false su Mac (gestisce spazi nei path), shell:true su Windows (richiesto da winget/cmd)
     const proc = spawn(cmd, args, {
-      shell: process.platform === 'win32',
+      shell: true,
       env,
       cwd: cwd || HOME,
       ...spawnOpts,
@@ -175,39 +155,17 @@ function runQ(cmd, timeoutMs = 10000) {
 // ── TROVA CLAUDE ─────────────────────────────────────────────
 async function findClaude() {
   if (IS_MAC) {
-    // Cerca con which in PATH esteso
-    const extPath = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || '');
-    const w = await runQ('which claude', { env: { PATH: extPath } });
-    if (w && w.trim() && fs.existsSync(w.trim())) return w.trim();
-
-    // Tutti i percorsi possibili dove npm può installare claude su Mac
+    // Cerca prima con which (più affidabile)
+    const w = await runQ('which claude');
+    if (w && fs.existsSync(w)) return w;
+    // Percorsi comuni su Mac
     const macPaths = [
-      '/usr/local/bin/claude',
       '/opt/homebrew/bin/claude',
+      '/usr/local/bin/claude',
       `${HOME}/.npm-global/bin/claude`,
       `${HOME}/Library/npm/bin/claude`,
-      `${HOME}/.npm/bin/claude`,
-      '/usr/local/lib/node_modules/.bin/claude',
-      '/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude',
     ];
-
-    // Cerca anche nel prefix npm del node bundled
-    try {
-      const bundledNode = getBundledNode();
-      const bundledDir = path.dirname(bundledNode);
-      const npmCli = path.join(bundledDir, 'npm_modules', 'bin', 'npm-cli.js');
-      if (fs.existsSync(npmCli)) {
-        const { execFileSync } = require('child_process');
-        const prefix = execFileSync(bundledNode, [npmCli, 'config', 'get', 'prefix'], {
-          env: { ...process.env, PATH: bundledDir + ':/usr/local/bin:/usr/bin:/bin' }
-        }).toString().trim();
-        if (prefix && prefix !== 'undefined') {
-          macPaths.push(path.join(prefix, 'bin', 'claude'));
-        }
-      }
-    } catch(_) {}
-
-    for (const p of macPaths) if (p && fs.existsSync(p)) return p;
+    for (const p of macPaths) if (fs.existsSync(p)) return p;
     return null;
   }
 
@@ -218,12 +176,9 @@ async function findClaude() {
 
   const winPaths = [
     ...prefixPaths,
-    process.env.APPDATA       ? `${process.env.APPDATA}\npm\claude.cmd`              : null,
-    process.env.APPDATA       ? `${process.env.APPDATA}\npm\claude`                  : null,
-    process.env.LOCALAPPDATA  ? `${process.env.LOCALAPPDATA}\npm\claude.cmd`         : null,
-    process.env.LOCALAPPDATA  ? `${process.env.LOCALAPPDATA}\npm\claude`             : null,
-    process.env.ProgramFiles  ? `${process.env.ProgramFiles}\nodejs\claude.cmd`      : null,
-    process.env.ProgramFiles  ? `${process.env.ProgramFiles}\nodejs\npm\claude.cmd` : null,
+    process.env.APPDATA    ? `${process.env.APPDATA}\\npm\\claude.cmd`         : null,
+    process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\npm\\claude.cmd`   : null,
+    process.env.ProgramFiles  ? `${process.env.ProgramFiles}\\nodejs\\claude.cmd` : null,
   ].filter(Boolean);
 
   for (const p of winPaths) if (fs.existsSync(p)) return p;
@@ -233,51 +188,37 @@ async function findClaude() {
 // ── TROVA TRADINGVIEW ────────────────────────────────────────
 async function findTradingView() {
   if (IS_WIN) {
-    // Su Windows usiamo Chrome o Edge con CDP invece di TradingView.exe
-    // Questo bypassa completamente il problema MSIX/Store/permessi Admin
+    const regPaths = [];
 
-    // 1. Cerca Google Chrome
-    const chromePaths = [
-      process.env.ProgramFiles       ? `${process.env.ProgramFiles}\Google\Chrome\Application\chrome.exe`        : null,
-      process.env['ProgramFiles(x86)'] ? `${process.env['ProgramFiles(x86)']}\Google\Chrome\Application\chrome.exe` : null,
-      process.env.LOCALAPPDATA       ? `${process.env.LOCALAPPDATA}\Google\Chrome\Application\chrome.exe`        : null,
-    ].filter(Boolean);
-
-    for (const p of chromePaths) {
-      if (p && fs.existsSync(p)) return p;
-    }
-
-    // 2. Cerca Microsoft Edge (installato su tutti i Windows 10/11)
-    const edgePaths = [
-      process.env.ProgramFiles         ? `${process.env.ProgramFiles}\Microsoft\Edge\Application\msedge.exe`         : null,
-      process.env['ProgramFiles(x86)'] ? `${process.env['ProgramFiles(x86)']}\Microsoft\Edge\Application\msedge.exe` : null,
-      process.env.LOCALAPPDATA         ? `${process.env.LOCALAPPDATA}\Microsoft\Edge\Application\msedge.exe`         : null,
-      'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
-      'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
-    ].filter(Boolean);
-
-    for (const p of edgePaths) {
-      if (p && fs.existsSync(p)) return p;
-    }
-
-    // 3. Cerca tramite registro (Chrome o Edge)
-    for (const key of [
-      'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe',
-      'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe',
-    ]) {
-      try {
-        const out = await runQ(`reg query "${key}" /ve 2>nul`);
+    // Cerca nel registro (metodo più affidabile)
+    for (const hive of ['HKCU', 'HKLM']) {
+      for (const regPath of [
+        `${hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall`,
+        `${hive}\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall`,
+      ]) {
+        const out = await runQ(`reg query "${regPath}" /s /f "TradingView" 2>nul`);
         if (out) {
-          const m = out.match(/REG_SZ\s+(.+\.exe)/i);
-          if (m && m[1].trim() && fs.existsSync(m[1].trim())) return m[1].trim();
+          const m = out.match(/InstallLocation\s+REG_SZ\s+(.+)/);
+          if (m && m[1].trim()) {
+            regPaths.push(m[1].trim() + '\\TradingView.exe');
+          }
         }
-      } catch(_) {}
+      }
     }
 
+    const fallbacks = [
+      process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Programs\\TradingView\\TradingView.exe` : null,
+      process.env.ProgramFiles  ? `${process.env.ProgramFiles}\\TradingView\\TradingView.exe`           : null,
+      process.env['ProgramFiles(x86)'] ? `${process.env['ProgramFiles(x86)']}\\TradingView\\TradingView.exe` : null,
+    ].filter(Boolean);
+
+    for (const p of [...regPaths, ...fallbacks]) {
+      if (p && fs.existsSync(p)) return p;
+    }
     return null;
   }
 
-  // Mac — usa TradingView.app nativa (su Mac non c'è problema MSIX)
+  // Mac
   const macPaths = [
     '/Applications/TradingView.app',
     `${HOME}/Applications/TradingView.app`,
@@ -506,131 +447,83 @@ async function step0_sistema() {
   }
 
   if (IS_MAC) {
-    // Node è bundled nell'app — verifica che esista
-    const bundledNode = getBundledNode();
-    if (!fs.existsSync(bundledNode)) {
-      throw new Error('Node bundled non trovato. Reinstalla il software.');
+    // Cerca brew nei percorsi standard (Apple Silicon e Intel)
+    let brewFound = await runQ('which brew');
+    if (!brewFound) {
+      const brewPaths = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'];
+      for (const p of brewPaths) {
+        if (fs.existsSync(p)) { brewFound = p; break; }
+      }
     }
-    // Rende eseguibile il binario bundled
-    fs.chmodSync(bundledNode, 0o755);
-    // Aggiunge il bundled-node al PATH di questo processo
-    const bundledDir = path.dirname(bundledNode);
-    if (!process.env.PATH.includes(bundledDir)) {
-      process.env.PATH = bundledDir + ':' + process.env.PATH;
+
+    if (!brewFound) {
+      sendLog('Homebrew non trovato — apro il Terminale per installarlo...');
+
+      // Apre Terminal con il comando brew già scritto, pronto da eseguire
+      await runQ(`osascript -e 'tell application "Terminal" to activate' -e 'tell application "Terminal" to do script "/bin/bash -c \\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'`);
+
+      sendLog('Terminale aperto! Inserisci la password del Mac e attendi.');
+      sendLog('Quando Homebrew è installato, clicca RIPROVA per continuare.');
+
+      throw new Error(
+        'Homebrew in installazione nel Terminale.\n\n' +
+        '1. Vai sul Terminale appena aperto\n' +
+        '2. Inserisci la password del Mac\n' +
+        '3. Attendi il completamento (5-10 min)\n' +
+        '4. Clicca RIPROVA qui sotto'
+      );
     }
-    sendLog('Node bundled pronto — OK');
+
+    // Aggiunge brew al PATH per questa sessione (Apple Silicon lo mette in /opt/homebrew)
+    const brewDir = brewFound.replace('/brew', '');
+    if (!process.env.PATH.includes(brewDir)) {
+      process.env.PATH = brewDir + ':' + process.env.PATH;
+    }
+    sendLog('Homebrew trovato — OK');
   }
 }
 
-// Step 1 — Node.js (bundled su Mac, winget su Windows)
+// Step 1 — Node.js
 async function step1_nodejs() {
-  if (IS_MAC) {
-    // Su Mac usiamo il Node bundled nell'app — già configurato in step0
-    const bundledNode = getBundledNode();
-    const v = await runQ(`"${bundledNode}" --version`);
-    sendLog(`Node.js ${v} (bundled) — OK`);
-    return;
-  }
-
-  // Windows: verifica o installa Node.js
   const v = await runQ('node --version');
   if (v) { sendLog(`Node.js ${v} già installato`); return; }
 
-  // METODO 1: winget con --source winget (forza origine winget, evita msstore)
-  sendLog('Installazione Node.js LTS via winget...');
-  await run('winget', [
-    'install', '--id', 'OpenJS.NodeJS.LTS',
-    '--source', 'winget',
-    '--silent', '--accept-package-agreements', '--accept-source-agreements',
-  ], { ignoreError: true });
-  await refreshWinPath();
-
-  let v2 = await runQ('node --version');
-  if (v2) { sendLog(`Node.js ${v2} installato (winget)`); return; }
-
-  // METODO 2: download diretto MSI da nodejs.org (universale, funziona sempre)
-  sendLog('winget fallito, scarico Node.js da nodejs.org...');
-  try {
-    const tmpDir = process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp';
-    const msiPath = path.join(tmpDir, 'nodejs-lts.msi');
-
-    // URL ufficiale Node.js LTS — versione 22.x x64 stabile
-    const nodeUrl = 'https://nodejs.org/dist/v22.11.0/node-v22.11.0-x64.msi';
-
-    sendLog('Download in corso (circa 30 MB)...');
-    await run('powershell', [
-      '-nologo', '-noprofile', '-command',
-      `Invoke-WebRequest -Uri '${nodeUrl}' -OutFile '${msiPath}' -UseBasicParsing`
-    ], { ignoreError: false });
-
-    if (!fs.existsSync(msiPath)) {
-      throw new Error('Download MSI fallito');
-    }
-
-    sendLog('Installazione MSI in corso...');
-    await run('msiexec', [
-      '/i', msiPath,
-      '/quiet', '/norestart',
-      'ADDLOCAL=ALL'
-    ], { ignoreError: false });
-
+  sendLog('Installazione Node.js LTS in corso...');
+  if (IS_WIN) {
+    await run('winget', [
+      'install', '--id', 'OpenJS.NodeJS.LTS',
+      '--silent', '--accept-package-agreements', '--accept-source-agreements',
+    ], { ignoreError: true });
     await refreshWinPath();
-
-    // Aggiorna PATH manualmente con i percorsi standard MSI
-    const nodeStdPaths = [
-      `${process.env.ProgramFiles}\\nodejs`,
-      `${process.env['ProgramFiles(x86)']}\\nodejs`,
-    ].filter(p => p && fs.existsSync(p));
-
-    if (nodeStdPaths.length) {
-      process.env.PATH = nodeStdPaths.join(';') + ';' + (process.env.PATH || '');
-    }
-
-    v2 = await runQ('node --version');
-    if (!v2) {
-      // Prova path assoluto diretto
-      for (const p of nodeStdPaths) {
-        const exe = path.join(p, 'node.exe');
-        if (fs.existsSync(exe)) {
-          v2 = await runQ(`"${exe}" --version`);
-          if (v2) {
-            sendLog(`Node.js ${v2} installato (MSI diretto)`);
-            return;
-          }
-        }
-      }
-    } else {
-      sendLog(`Node.js ${v2} installato (MSI diretto)`);
-      return;
-    }
-  } catch (e) {
-    sendLog(`Download MSI fallito: ${e.message}`);
+  } else {
+    await run('brew', ['install', 'node']);
   }
 
-  throw new Error(
-    'Impossibile installare Node.js automaticamente.\n' +
-    'Scaricalo manualmente da: https://nodejs.org/\n' +
-    'Poi riesegui l\'installer.'
-  );
+  const v2 = await runQ('node --version');
+  if (!v2) {
+    throw new Error(
+      'Node.js non trovato dopo installazione.\n' +
+      'Soluzione: riavvia il PC e riesegui l\'installer.'
+    );
+  }
+  sendLog(`Node.js ${v2} installato`);
 }
 
-// Step 2 — Git (solo Windows, su Mac non serve più)
+// Step 2 — Git
 async function step2_git() {
-  if (IS_MAC) {
-    sendLog('Git non necessario su Mac — OK');
-    return;
-  }
-
-  // Windows
   const v = await runQ('git --version');
   if (v) { sendLog(`Git già installato`); return; }
 
   sendLog('Installazione Git in corso...');
-  await run('winget', [
-    'install', '--id', 'Git.Git',
-    '--silent', '--accept-package-agreements', '--accept-source-agreements',
-  ], { ignoreError: true });
-  await refreshWinPath();
+  if (IS_WIN) {
+    await run('winget', [
+      'install', '--id', 'Git.Git',
+      '--silent', '--accept-package-agreements', '--accept-source-agreements',
+    ], { ignoreError: true });
+    await refreshWinPath();
+  } else {
+    await run('brew', ['install', 'git']);
+  }
 
   const v2 = await runQ('git --version');
   if (!v2) {
@@ -648,72 +541,11 @@ async function step3_claude() {
   if (claudePath) { sendLog('Claude Code già installato'); return claudePath; }
 
   sendLog('Installazione Claude Code in corso...');
-
-  if (IS_MAC) {
-    const bundledNode = getBundledNode();
-    const bundledDir  = path.dirname(bundledNode);
-    fs.chmodSync(bundledNode, 0o755);
-
-    // npm-cli.js bundled nell'app (viene dalla cartella npm_modules inclusa nella build)
-    const npmCli = path.join(bundledDir, 'npm_modules', 'bin', 'npm-cli.js');
-
-    if (!fs.existsSync(npmCli)) {
-      throw new Error(
-        'npm bundled non trovato: ' + npmCli + '\n' +
-        'Reinstalla il software.'
-      );
-    }
-
-    // Crea symlink node se non esiste
-    const nodeSymlink = path.join(bundledDir, 'node');
-    if (!fs.existsSync(nodeSymlink)) {
-      try { fs.symlinkSync(bundledNode, nodeSymlink); } catch(_) {}
-    }
-
-    const cleanEnv = {
-      ...process.env,
-      PATH: bundledDir + ':/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
-    };
-
-    // Usa node bundled per eseguire npm-cli.js bundled — zero dipendenze esterne
-    await run(bundledNode, [npmCli, 'install', '-g', '@anthropic-ai/claude-code'], {
-      cwd: HOME,
-      env: cleanEnv
-    });
-
-  } else {
-    // Windows: cerca npm in tutti i path standard
-    const winNpmCandidates = [
-      process.env.ProgramFiles  ? `${process.env.ProgramFiles}\nodejs\npm.cmd`  : null,
-      process.env.APPDATA       ? `${process.env.APPDATA}\npm\npm.cmd`           : null,
-      process.env.LOCALAPPDATA  ? `${process.env.LOCALAPPDATA}\npm\npm.cmd`      : null,
-      'npm', // fallback generico
-    ].filter(Boolean);
-
-    let winNpm = 'npm';
-    for (const p of winNpmCandidates) {
-      if (p === 'npm') { winNpm = 'npm'; break; }
-      if (fs.existsSync(p)) { winNpm = p; break; }
-    }
-
-    const winEnv = {
-      ...process.env,
-      PATH: [
-        process.env.ProgramFiles  ? `${process.env.ProgramFiles}\nodejs`  : '',
-        process.env.APPDATA       ? `${process.env.APPDATA}\npm`           : '',
-        process.env.LOCALAPPDATA  ? `${process.env.LOCALAPPDATA}\npm`      : '',
-        process.env.PATH || '',
-      ].filter(Boolean).join(';')
-    };
-
-    await run(winNpm, ['install', '-g', '@anthropic-ai/claude-code'], {
-      cwd: HOME,
-      env: winEnv
-    });
-  }
-
+  await run('npm', ['install', '-g', '@anthropic-ai/claude-code'], { cwd: HOME });
   await refreshWinPath();
-  await new Promise(r => setTimeout(r, 3000));
+
+  // Aspetta un momento per il filesystem
+  await new Promise(r => setTimeout(r, 1500));
   claudePath = await findClaude();
 
   if (!claudePath) {
@@ -726,62 +558,30 @@ async function step3_claude() {
   return claudePath;
 }
 
-
-// Step 4 — TradingView MCP Server (bundled dentro l'app)
+// Step 4 — TradingView MCP Server
 async function step4_mcp() {
   const dest = path.join(HOME, 'tradingview-mcp');
-
-  // Percorso dei file MCP bundled dentro l'app Electron
-  // In produzione: process.resourcesPath/bundled-mcp
-  // In sviluppo: cartella progetto/bundled-mcp
-  let bundledMcp = app.isPackaged
-    ? path.join(process.resourcesPath, 'bundled-mcp')
-    : path.join(__dirname, '..', 'bundled-mcp');
-
-  // Risolvi eventuali symlink (es. quando l'app gira da DMG montato)
-  try {
-    if (fs.existsSync(bundledMcp)) {
-      bundledMcp = fs.realpathSync(bundledMcp);
-    }
-  } catch (e) { /* ignore */ }
-
-  if (!fs.existsSync(bundledMcp)) {
-    // Errore dettagliato che mostra il path effettivamente cercato
-    const parent = path.dirname(bundledMcp);
-    let dirContents = '';
-    try {
-      if (fs.existsSync(parent)) {
-        dirContents = '\nContenuto cartella: ' + fs.readdirSync(parent).join(', ');
-      }
-    } catch (e) { /* ignore */ }
-    throw new Error(
-      'File MCP bundled non trovati. Path cercato: ' + bundledMcp +
-      dirContents +
-      '\nSe il problema persiste, sposta l\'app in /Applications e riapri.'
-    );
-  }
-
   const hasPkg = fs.existsSync(path.join(dest, 'package.json'));
 
-  if (!hasPkg) {
-    sendLog('Installazione tradingview-mcp in corso...');
-    // Copia i file bundled nella home del cliente
-    if (IS_WIN) {
-      await run('xcopy', [bundledMcp, dest, '/E', '/I', '/Y', '/Q'], { ignoreError: false });
-    } else {
-      if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
-      await run('cp', ['-r', bundledMcp + '/.', dest], { ignoreError: false });
-    }
-  } else {
-    sendLog('tradingview-mcp già presente');
-  }
-
-  // Su Mac i node_modules sono pre-installati nel bundled-mcp
-  if (IS_MAC) {
-    sendLog('Dipendenze MCP pre-installate — OK');
-  } else {
-    sendLog('Installazione dipendenze MCP...');
+  if (hasPkg) {
+    sendLog('Aggiornamento tradingview-mcp...');
+    await run('git', ['-C', dest, 'pull', '--ff-only'], { ignoreError: true });
     await run('npm', ['install', '--no-audit', '--prefer-offline'], { cwd: dest });
+  } else {
+    sendLog('Download tradingview-mcp da GitHub...');
+    // Rimuovi cartella parziale se esiste
+    if (fs.existsSync(dest)) {
+      await run(IS_WIN ? 'rmdir' : 'rm', IS_WIN ? ['/s', '/q', dest] : ['-rf', dest], { ignoreError: true });
+    }
+    await run('git', ['clone', 'https://github.com/tradesdontlie/tradingview-mcp', dest]);
+
+    if (!fs.existsSync(path.join(dest, 'package.json'))) {
+      throw new Error(
+        'Download tradingview-mcp fallito.\n' +
+        'Verifica la connessione internet e riprova.'
+      );
+    }
+    await run('npm', ['install', '--no-audit'], { cwd: dest });
   }
 
   sendLog('tradingview-mcp pronto');
@@ -790,11 +590,6 @@ async function step4_mcp() {
 
 // Step 5 — Trova TradingView
 async function step5_findtv() {
-  if (IS_WIN) {
-    sendLog('Ricerca browser (Chrome/Edge) per TradingView...');
-  } else {
-    sendLog('Ricerca TradingView...');
-  }
   const p = await findTradingView();
   if (p) sendLog(`TradingView trovato: ${p}`);
   else sendLog('TradingView non trovato — verrà usato il percorso di default');
@@ -806,82 +601,19 @@ async function step6_mcp(claudePath, mcpDir) {
   if (!claudePath) throw new Error('Percorso Claude Code non determinato');
   if (!mcpDir)     throw new Error('Directory MCP non determinata');
 
-  // Auto-rileva il file entry point del server MCP
-  // Controlla i percorsi più comuni usati dai repo npm/github
-  const candidates = [
-    path.join(mcpDir, 'index.js'),
-    path.join(mcpDir, 'src', 'server.js'),
-    path.join(mcpDir, 'src', 'index.js'),
-    path.join(mcpDir, 'dist', 'index.js'),
-    path.join(mcpDir, 'dist', 'server.js'),
-    path.join(mcpDir, 'server.js'),
-    path.join(mcpDir, 'app.js'),
-  ];
-
-  // Controlla anche il campo "main" nel package.json del repo
-  let indexPath = null;
-  try {
-    const pkgJson = JSON.parse(fs.readFileSync(path.join(mcpDir, 'package.json'), 'utf8'));
-    if (pkgJson.main) {
-      const mainPath = path.join(mcpDir, pkgJson.main);
-      if (fs.existsSync(mainPath)) indexPath = mainPath;
-    }
-    // Controlla anche bin e scripts.start
-    if (!indexPath && pkgJson.bin) {
-      const binVal = typeof pkgJson.bin === 'string' ? pkgJson.bin : Object.values(pkgJson.bin)[0];
-      if (binVal) {
-        const binPath = path.join(mcpDir, binVal);
-        if (fs.existsSync(binPath)) indexPath = binPath;
-      }
-    }
-  } catch (_) {}
-
-  // Fallback: cerca tra i candidati standard
-  if (!indexPath) {
-    for (const c of candidates) {
-      if (fs.existsSync(c)) { indexPath = c; break; }
-    }
+  const indexPath = path.join(mcpDir, 'index.js');
+  if (!fs.existsSync(indexPath)) {
+    throw new Error(`File MCP non trovato: ${indexPath}`);
   }
 
-  if (!indexPath) {
-    // Ultima spiaggia: cerca qualsiasi .js nella root
-    const rootFiles = fs.readdirSync(mcpDir).filter(f => f.endsWith('.js'));
-    if (rootFiles.length > 0) indexPath = path.join(mcpDir, rootFiles[0]);
-  }
-
-  if (!indexPath) {
-    throw new Error(`File MCP non trovato in: ${mcpDir}\nCartella contiene: ${fs.readdirSync(mcpDir).join(', ')}`);
-  }
-
-  sendLog(`Entry point MCP: ${path.basename(indexPath)}`);
-
-  // Rimuovi eventuali registrazioni precedenti (evita conflitti su reinstall)
-  for (const oldName of ['tradingview', 'tradingview-mcp']) {
-    await run(
-      claudePath,
-      ['mcp', 'remove', oldName],
-      { cwd: HOME, ignoreError: true }
-    );
-  }
-
-  // Registra il server MCP con nome 'tradingview-mcp' (universale, allineato al package.json)
+  // Esegui: claude mcp add tradingview -- node /path/to/index.js
+  // I percorsi vengono passati come array (spawn gestisce il quoting)
   await run(
-    claudePath,
-    ['mcp', 'add', 'tradingview-mcp', '--', 'node', indexPath],
+    IS_WIN ? `"${claudePath}"` : claudePath,
+    ['mcp', 'add', 'tradingview', '--', 'node', indexPath],
     { cwd: HOME, ignoreError: true }
   );
-
-  // Verifica che la registrazione sia andata a buon fine
-  try {
-    const out = await runQ(`"${claudePath}" mcp list`, 10000);
-    if (out && out.includes('tradingview-mcp')) {
-      sendLog('Server MCP configurato correttamente');
-    } else {
-      sendLog('ATTENZIONE: registrazione MCP non confermata');
-    }
-  } catch (_) {
-    sendLog('Server MCP configurato');
-  }
+  sendLog('Server MCP configurato');
 }
 
 // Step 7 — Crea launcher sul Desktop
@@ -894,16 +626,22 @@ async function step7_launcher(claudePath, tvPath, mcpDir) {
   }
 
   if (IS_WIN) {
+    // Usa variabili bat native per PATH (non hardcodare percorsi)
+    // Usa il percorso claude reale trovato durante installazione
+    const tvExe = tvPath
+      ? `"${tvPath}"`
+      : `"%LOCALAPPDATA%\\Programs\\TradingView\\TradingView.exe"`;
+
     const claudeExe = `"${claudePath}"`;
-    const browserExe = tvPath || '';
 
     const lines = [
       '@echo off',
-      'setlocal enabledelayedexpansion',
+      'setlocal',
       'title TradingView2Claude Connector',
       'cls',
       '',
-      'set "PATH=%ProgramFiles%\\nodejs;%LOCALAPPDATA%\\Programs\\nodejs;%APPDATA%\\npm;%LOCALAPPDATA%\\npm;%SystemRoot%\\System32;%SystemRoot%;%PATH%"',
+      ':: Aggiunge percorsi npm e nodejs al PATH',
+      'set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%LOCALAPPDATA%\\npm;%ProgramFiles%\\Git\\cmd;%PATH%"',
       '',
       'echo.',
       'echo  +==============================================+',
@@ -911,75 +649,25 @@ async function step7_launcher(claudePath, tvPath, mcpDir) {
       'echo  +==============================================+',
       'echo.',
       '',
-      'set "BROWSER_EXE="',
-      ...(browserExe ? [`if exist "${browserExe}" set "BROWSER_EXE=${browserExe}"`] : []),
-      'if not defined BROWSER_EXE if exist "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" set "BROWSER_EXE=%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"',
-      'if not defined BROWSER_EXE if exist "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe" set "BROWSER_EXE=%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe"',
-      'if not defined BROWSER_EXE if exist "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe" set "BROWSER_EXE=%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"',
-      'if not defined BROWSER_EXE if exist "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe" set "BROWSER_EXE=%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe"',
-      'if not defined BROWSER_EXE if exist "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe" set "BROWSER_EXE=%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe"',
-      'if not defined BROWSER_EXE if exist "%LOCALAPPDATA%\\Microsoft\\Edge\\Application\\msedge.exe" set "BROWSER_EXE=%LOCALAPPDATA%\\Microsoft\\Edge\\Application\\msedge.exe"',
-      'if not defined BROWSER_EXE if exist "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe" set "BROWSER_EXE=C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"',
-      '',
-      'if not defined BROWSER_EXE (',
-      '  echo  X Chrome o Edge non trovato.',
-      '  echo    Installa Chrome da https://www.google.com/chrome/',
-      '  pause',
-      '  exit /b 1',
-      ')',
-      '',
-      'taskkill /f /im node.exe >nul 2>&1',
-      '%SystemRoot%\\System32\\netstat.exe -ano | findstr ":9222 " >nul 2>&1 && (',
-      '  for /f "tokens=5" %%p in (\'%SystemRoot%\\System32\\netstat.exe -ano ^| findstr ":9222 "\') do taskkill /f /pid %%p >nul 2>&1',
-      '  timeout /t 2 /nobreak >nul',
-      ')',
-      '',
-      'set "CDP_PROFILE=%USERPROFILE%\\tv2claude-browser-profile"',
-      'if not exist "%CDP_PROFILE%" mkdir "%CDP_PROFILE%"',
-      '',
-      'echo  [1/3] Apertura TradingView nel browser con porta debug...',
-      'start "" "%BROWSER_EXE%" --remote-debugging-port=9222 --user-data-dir="%CDP_PROFILE%" --app=https://www.tradingview.com --window-size=1400,900 --no-first-run --no-default-browser-check',
-      '',
-      'echo  Attendo che il browser sia pronto...',
-      'set CDP_READY=0',
-      'set RETRY=0',
-      ':WAIT_CDP',
+      'echo  [1/3] Chiusura TradingView...',
+      'taskkill /f /im TradingView.exe >nul 2>&1',
       'timeout /t 2 /nobreak >nul',
-      '%SystemRoot%\\System32\\curl.exe -s http://localhost:9222/json/version >nul 2>&1 && set CDP_READY=1',
-      'if "%CDP_READY%"=="1" goto CDP_OK',
-      'set /a RETRY+=1',
-      'if %RETRY% lss 15 goto WAIT_CDP',
-      'echo  ATTENZIONE: Browser lento, procedo comunque...',
-      ':CDP_OK',
-      'echo  [OK] Browser pronto su porta 9222',
       '',
-      'set "NODE_EXE="',
-      'if exist "%ProgramFiles%\\nodejs\\node.exe" set "NODE_EXE=%ProgramFiles%\\nodejs\\node.exe"',
-      'if not defined NODE_EXE if exist "%LOCALAPPDATA%\\Programs\\nodejs\\node.exe" set "NODE_EXE=%LOCALAPPDATA%\\Programs\\nodejs\\node.exe"',
-      'if not defined NODE_EXE set "NODE_EXE=node"',
+      'echo  [2/3] Apertura TradingView con porta debug...',
+      `start "" ${tvExe} --remote-debugging-port=9222`,
+      'timeout /t 5 /nobreak >nul',
+      'echo  [OK] TradingView avviato',
       '',
-      'echo  [2/3] Avvio server MCP TradingView...',
-      ':: Trova entry point del server MCP (server.js o index.js)',
-      'set "MCP_ENTRY="',
-      'if exist "' + mcpDir + '\\src\\server.js" set "MCP_ENTRY=' + mcpDir + '\\src\\server.js"',
-      'if not defined MCP_ENTRY if exist "' + mcpDir + '\\src\\index.js" set "MCP_ENTRY=' + mcpDir + '\\src\\index.js"',
-      'if not defined MCP_ENTRY if exist "' + mcpDir + '\\index.js" set "MCP_ENTRY=' + mcpDir + '\\index.js"',
-      'if not defined MCP_ENTRY set "MCP_ENTRY=' + mcpDir + '"',
-      'start /b "" "%NODE_EXE%" "%MCP_ENTRY%" >nul 2>&1',
-      'timeout /t 2 /nobreak >nul',
-      'echo  [OK] Server MCP avviato',
-      '',
-      'echo  [3/3] Avvio Claude Code in nuova finestra...',
+      'echo  [3/3] Avvio Claude Code...',
       'echo.',
-      'echo  TradingView aperto nel browser — Claude Code si apre in una nuova finestra',
+      'echo  Digita il tuo prompt di analisi e premi INVIO',
       'echo  Esempio: Analizza il grafico attuale, dimmi supporti e resistenze',
       'echo.',
-      ':: Lancia Claude Code in NUOVA finestra cmd interattiva (mantiene input da tastiera)',
-      `start "Claude Code" cmd /k "cd /d \"${mcpDir}\" && \"${claudePath}\""`,
-      'timeout /t 3 /nobreak >nul',
-      'echo  Claude Code aperto in finestra separata. Puoi chiudere questa.',
-      'timeout /t 3 /nobreak >nul',
+      `cd /d "${mcpDir}"`,
+      claudeExe,
+      '',
       'endlocal',
+      'pause',
     ];
 
     const launcherPath = path.join(desktop, 'Avvia TradingView2Claude.bat');
@@ -993,11 +681,8 @@ async function step7_launcher(claudePath, tvPath, mcpDir) {
       ? `open "${tvApp}" --args --remote-debugging-port=9222`
       : `open -a "TradingView" --args --remote-debugging-port=9222`;
 
-    const bundledDir = path.dirname(getBundledNode());
     const lines = [
       '#!/bin/bash',
-      '',
-      `export PATH="${bundledDir}:$PATH"`,
       '',
       'clear',
       'echo ""',
@@ -1005,14 +690,6 @@ async function step7_launcher(claudePath, tvPath, mcpDir) {
       'echo "  |      TradingView2Claude Connector          |"',
       'echo "  +==============================================+"',
       'echo ""',
-      '',
-      '# Verifica login Anthropic',
-      `if ! "${claudePath}" --print "test" >/dev/null 2>&1; then`,
-      '  echo "  [LOGIN] Accesso ad Anthropic richiesto..."',
-      '  echo ""',
-      `  "${claudePath}" /login`,
-      '  echo ""',
-      'fi',
       '',
       'echo "  [1/3] Chiusura TradingView..."',
       'pkill -f "TradingView" 2>/dev/null',
