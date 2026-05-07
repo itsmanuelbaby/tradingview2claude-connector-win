@@ -138,31 +138,15 @@ function getMachineId() {
 }
 
 // ── LICENSE API ───────────────────────────────────────────────
-// Usa electron.net invece di https raw: gestisce i redirect di Google Apps Script
-// automaticamente (Chromium network stack), evitando il problema del 302 POST→GET.
-function apiPost(payload) {
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify(payload);
-    const request = net.request({
-      method: 'POST',
-      url: LICENSE_API,
-      redirect: 'follow',
-    });
-    request.setHeader('Content-Type', 'application/json');
-    request.setHeader('Content-Length', String(Buffer.byteLength(data)));
-
-    let body = '';
-    request.on('response', res => {
-      res.on('data', chunk => { body += chunk.toString(); });
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); }
-        catch (_) { resolve({ ok: false, error: 'Risposta server non valida' }); }
-      });
-    });
-    request.on('error', err => reject(err));
-    request.write(data);
-    request.end();
+// net.fetch (Electron 21+): usa Chromium network stack, segue redirect automaticamente.
+async function apiPost(payload) {
+  const res = await net.fetch(LICENSE_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   });
+  const json = await res.json();
+  return json;
 }
 
 function saveLicense(data) { try { fs.writeFileSync(LICENSE_FILE, JSON.stringify(data)); } catch (_) {} }
