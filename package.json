@@ -6,9 +6,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "dist-mac": "electron-builder --mac",
-    "dist-win": "electron-builder --win",
-    "dist": "electron-builder --mac --win"
+    "dist-win": "electron-builder --win"
   },
   "build": {
     "appId": "com.tv2claude.connector",
@@ -34,25 +32,6 @@
       "requestedExecutionLevel": "requireAdministrator",
       "artifactName": "TradingView2Claude-Setup-${version}.exe"
     },
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64"
-          ]
-        }
-      ],
-      "icon": "assets/icon.icns",
-      "category": "public.app-category.utilities",
-      "artifactName": "TradingView2Claude-${version}-${arch}.dmg"
-    },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
@@ -61,17 +40,10 @@
       "createDesktopShortcut": false,
       "createStartMenuShortcut": true
     },
-    "dmg": {
-      "title": "TradingView2Claude Connector"
-    },
     "extraResources": [
       {
         "from": "bundled-mcp",
         "to": "bundled-mcp"
-      },
-      {
-        "from": "bundled-node",
-        "to": "bundled-node"
       }
     ]
   },
