@@ -5,14 +5,12 @@
 //  TradingView via Chrome/Edge con CDP — nessuna dipendenza MSIX
 // ================================================================
 
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, net } = require('electron');
 const path   = require('path');
 const { spawn, exec } = require('child_process');
 const fs     = require('fs');
 const os     = require('os');
 const crypto = require('crypto');
-const https  = require('https');
-const http   = require('http');
 
 const HOME = os.homedir();
 
@@ -140,49 +138,30 @@ function getMachineId() {
 }
 
 // ── LICENSE API ───────────────────────────────────────────────
-function apiPost(payload, redirectCount = 0) {
+// Usa electron.net invece di https raw: gestisce i redirect di Google Apps Script
+// automaticamente (Chromium network stack), evitando il problema del 302 POST→GET.
+function apiPost(payload) {
   return new Promise((resolve, reject) => {
-    if (redirectCount > 5) return reject(new Error('Troppi redirect'));
-    const url  = new URL(LICENSE_API);
     const data = JSON.stringify(payload);
-    const opts = {
-      hostname: url.hostname,
-      path: url.pathname + url.search,
+    const request = net.request({
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
-    };
-    const req = https.request(opts, res => {
-      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-        const loc = res.headers.location;
-        const mod = loc.startsWith('https') ? https : http;
-        const newUrl = new URL(loc);
-        const newOpts = {
-          hostname: newUrl.hostname,
-          path: newUrl.pathname + newUrl.search,
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
-        };
-        const req2 = mod.request(newOpts, res2 => {
-          let body = '';
-          res2.on('data', d => body += d);
-          res2.on('end', () => {
-            try { resolve(JSON.parse(body)); } catch { resolve({ success: false, message: body }); }
-          });
-        });
-        req2.on('error', reject);
-        req2.write(data);
-        req2.end();
-        return;
-      }
-      let body = '';
-      res.on('data', d => body += d);
+      url: LICENSE_API,
+      redirect: 'follow',
+    });
+    request.setHeader('Content-Type', 'application/json');
+    request.setHeader('Content-Length', String(Buffer.byteLength(data)));
+
+    let body = '';
+    request.on('response', res => {
+      res.on('data', chunk => { body += chunk.toString(); });
       res.on('end', () => {
-        try { resolve(JSON.parse(body)); } catch { resolve({ success: false, message: body }); }
+        try { resolve(JSON.parse(body)); }
+        catch (_) { resolve({ ok: false, error: 'Risposta server non valida' }); }
       });
     });
-    req.on('error', reject);
-    req.write(data);
-    req.end();
+    request.on('error', err => reject(err));
+    request.write(data);
+    request.end();
   });
 }
 
