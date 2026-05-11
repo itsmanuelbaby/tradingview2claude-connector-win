@@ -138,15 +138,36 @@ function getMachineId() {
 }
 
 // ── LICENSE API ───────────────────────────────────────────────
-// net.fetch (Electron 21+): usa Chromium network stack, segue redirect automaticamente.
+// fetch globale (Node 18+ via undici): identico a quello del browser,
+// gestisce redirect automaticamente. Non usa Chromium network stack
+// che dava ERR_INVALID_ARGUMENT con Electron 28 + net.fetch.
 async function apiPost(payload) {
-  const res = await net.fetch(LICENSE_API, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const json = await res.json();
-  return json;
+  const data = JSON.stringify(payload);
+  try {
+    const res = await fetch(LICENSE_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: data,
+    });
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return { ok: false, error: `Risposta non JSON (status ${res.status}): ${text.substring(0, 150)}` };
+    }
+  } catch (e) {
+    // Fallback su net.fetch di Electron
+    try {
+      const res2 = await net.fetch(LICENSE_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: data,
+      });
+      return await res2.json();
+    } catch (e2) {
+      throw new Error(`fetch: ${e.message} | net.fetch: ${e2.message}`);
+    }
+  }
 }
 
 function saveLicense(data) { try { fs.writeFileSync(LICENSE_FILE, JSON.stringify(data)); } catch (_) {} }
