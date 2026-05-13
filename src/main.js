@@ -69,8 +69,8 @@ function buildWinPath() {
 
 async function refreshWinPath() {
   try {
-    const sys = await runQ('powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable(\'PATH\',\'Machine\')"');
-    const usr = await runQ('powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable(\'PATH\',\'User\')"');
+    const sys = await runQ('powershell -NoProfile -ExecutionPolicy Bypass -Command "[Environment]::GetEnvironmentVariable(\'PATH\',\'Machine\')"');
+    const usr = await runQ('powershell -NoProfile -ExecutionPolicy Bypass -Command "[Environment]::GetEnvironmentVariable(\'PATH\',\'User\')"');
     const merged = [sys, usr, process.env.PATH].filter(Boolean).join(';');
     if (merged) process.env.PATH = merged;
   } catch (_) {}
@@ -288,7 +288,7 @@ async function step1_nodejs() {
     const msiPath = path.join(tmpDir, 'nodejs-lts.msi');
     sendLog('Download in corso (~30 MB)...');
     await run('powershell', [
-      '-nologo', '-noprofile', '-command',
+      '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
       `Invoke-WebRequest -Uri 'https://nodejs.org/dist/v22.11.0/node-v22.11.0-x64.msi' -OutFile '${msiPath}' -UseBasicParsing`,
     ]);
     if (!fs.existsSync(msiPath)) throw new Error('File MSI non scaricato');
@@ -309,13 +309,13 @@ async function step1_nodejs() {
     const installDir = path.join(process.env.LOCALAPPDATA || tmpDir, 'PortableNode');
     sendLog('Download Node.js portable (~30 MB)...');
     await run('powershell', [
-      '-nologo', '-noprofile', '-command',
+      '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
       `Invoke-WebRequest -Uri 'https://nodejs.org/dist/v22.11.0/node-v22.11.0-win-x64.zip' -OutFile '${zipPath}' -UseBasicParsing`,
     ]);
     if (fs.existsSync(zipPath)) {
       sendLog('Estrazione...');
       await run('powershell', [
-        '-nologo', '-noprofile', '-command',
+        '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
         `Expand-Archive -Path '${zipPath}' -DestinationPath '${installDir}' -Force`,
       ]);
       const portableDir  = path.join(installDir, 'node-v22.11.0-win-x64');
@@ -360,7 +360,7 @@ async function step2_git() {
     const installDir = path.join(process.env.LOCALAPPDATA || tmpDir, 'PortableGit');
     sendLog('Download Git Portable (~50 MB)...');
     await run('powershell', [
-      '-nologo', '-noprofile', '-command',
+      '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
       `Invoke-WebRequest -Uri 'https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/PortableGit-2.47.1-64-bit.7z.exe' -OutFile '${zipPath}' -UseBasicParsing`,
     ]);
     if (fs.existsSync(zipPath)) {
