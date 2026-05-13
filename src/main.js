@@ -77,11 +77,24 @@ async function refreshWinPath() {
 }
 
 // ── ESEGUI CON LOG ───────────────────────────────────────────
+// Su Windows con shell:true, i path con spazi (es. "C:\Program Files\...")
+// vengono splittati. Virgolettiamo manualmente comando e argomenti.
+function quoteArg(s) {
+  if (typeof s !== 'string') return s;
+  // Già virgolettato? Lascia stare
+  if (s.startsWith('"') && s.endsWith('"')) return s;
+  // Contiene spazi o caratteri speciali? Virgoletta
+  if (/[\s"&|<>^()]/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
+  return s;
+}
+
 function run(cmd, args = [], opts = {}) {
   const { ignoreError = false, cwd, env } = opts;
   return new Promise((resolve, reject) => {
     const mergedEnv = { ...process.env, ...buildWinPath(), ...env };
-    const proc = spawn(cmd, args, { shell: true, env: mergedEnv, cwd: cwd || HOME });
+    // Costruisci la riga di comando completa con quoting corretto
+    const fullCmd = [quoteArg(cmd), ...args.map(quoteArg)].join(' ');
+    const proc = spawn(fullCmd, [], { shell: true, env: mergedEnv, cwd: cwd || HOME });
     let stdout = '', stderr = '';
 
     proc.stdout?.on('data', chunk => {
