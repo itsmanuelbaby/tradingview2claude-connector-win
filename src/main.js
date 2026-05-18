@@ -16,7 +16,8 @@ const HOME = os.homedir();
 
 // ── CONFIGURAZIONE ────────────────────────────────────────────
 const LICENSE_API  = 'https://script.google.com/macros/s/AKfycbyXx0246ZvZtieTHHLUgsG4bbZirOVMGnDgT788bodMVkwjY_6Pnusho2IAL3YSrZSW/exec';
-const LICENSE_FILE = path.join(app.getPath('userData'), 'lic.dat');
+const LICENSE_FILE = path.join(HOME, '.tv2claude_license');
+const LIC_CHECK_JS = path.join(HOME, '.tv2claude-lic-check.js');
 const APP_VERSION  = '1.0.0';
 
 // ── FINESTRA PRINCIPALE ───────────────────────────────────────
@@ -133,18 +134,28 @@ function runQ(cmd, timeoutMs = 10000) {
 }
 
 // ── MACHINE ID (Windows) ─────────────────────────────────────
+// Usa wmic csproduct get uuid (UUID hardware persistente del BIOS).
+// Sopravvive a reinstallazioni Windows e cambio username.
 function getMachineId() {
   try {
     const { execSync } = require('child_process');
-    const out = execSync(
-      'reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid',
-      { encoding: 'utf8', timeout: 5000 }
-    );
+    const out = execSync('wmic csproduct get uuid', { encoding: 'utf8', timeout: 5000 });
+    // Output: "UUID\r\n<uuid>\r\n"
+    const lines = out.split(/\r?\n/).map(l => l.trim()).filter(l => l && l !== 'UUID');
+    if (lines.length && /^[0-9A-F-]{20,}$/i.test(lines[0])) {
+      return crypto.createHash('sha256').update(lines[0]).digest('hex').substring(0, 32);
+    }
+  } catch (_) {}
+  // Fallback 1: registro MachineGuid
+  try {
+    const { execSync } = require('child_process');
+    const out = execSync('reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid', { encoding: 'utf8', timeout: 5000 });
     const m = out.match(/MachineGuid\s+REG_SZ\s+([^\r\n]+)/i);
     if (m && m[1].trim()) {
       return crypto.createHash('sha256').update(m[1].trim()).digest('hex').substring(0, 32);
     }
   } catch (_) {}
+  // Fallback 2: hostname + username
   return crypto.createHash('sha256')
     .update(os.hostname() + os.userInfo().username)
     .digest('hex').substring(0, 32);
@@ -549,6 +560,64 @@ async function step7_launcher(claudePath, browserPath, mcpDir) {
 
   const nodeBin = await findNode();
 
+  // ── Scrive lo script Node per la validazione online della licenza ─────
+  // Output: stampa "OK" (licenza attiva), "FAIL" (revocata o invalida),
+  // o "OFFLINE" (errore di rete — il launcher procederà comunque).
+  const licCheckScript = `'use strict';
+const https = require('https');
+const fs    = require('fs');
+const os    = require('os');
+const path  = require('path');
+
+const API_URL  = ${JSON.stringify(LICENSE_API)};
+const LIC_FILE = path.join(os.homedir(), '.tv2claude_license');
+
+function done(s) { process.stdout.write(s + '\\n'); }
+
+function get(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { timeout: 8000 }, res => {
+      if ([301,302,303,307,308].includes(res.statusCode) && res.headers.location) {
+        return get(res.headers.location).then(resolve).catch(reject);
+      }
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => resolve(body));
+    }).on('error', reject).on('timeout', function(){ this.destroy(new Error('timeout')); });
+  });
+}
+
+let key;
+try { key = JSON.parse(fs.readFileSync(LIC_FILE, 'utf8')).key; } catch (_) {}
+if (!key) { done('FAIL'); return; }
+
+const payload = JSON.stringify({ action: 'validate', license_key: key });
+const u = new URL(API_URL);
+const req = https.request({
+  hostname: u.hostname,
+  path: u.pathname + u.search,
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+  timeout: 8000,
+}, res => {
+  const handle = body => {
+    try { done(JSON.parse(body).ok ? 'OK' : 'FAIL'); }
+    catch (_) { done('OFFLINE'); }
+  };
+  if ([301,302,303,307,308].includes(res.statusCode) && res.headers.location) {
+    return get(res.headers.location).then(handle).catch(() => done('OFFLINE'));
+  }
+  let body = '';
+  res.on('data', c => body += c);
+  res.on('end', () => handle(body));
+});
+req.on('error',   () => done('OFFLINE'));
+req.on('timeout', () => { req.destroy(); done('OFFLINE'); });
+req.write(payload);
+req.end();
+`;
+  fs.writeFileSync(LIC_CHECK_JS, licCheckScript, { encoding: 'utf8' });
+
   // Trova entry point MCP
   const mcpEntryPath =
     fs.existsSync(path.join(mcpDir, 'src', 'server.js')) ? path.join(mcpDir, 'src', 'server.js') :
@@ -608,6 +677,29 @@ async function step7_launcher(claudePath, browserPath, mcpDir) {
     'if not defined CLAUDE_EXE for /f "delims=" %%c in (\'where claude 2^>nul\') do if not defined CLAUDE_EXE set "CLAUDE_EXE=%%c"',
     'if not defined CLAUDE_EXE (',
     '  echo  X Claude Code non trovato. Reinstalla il software.',
+    '  pause',
+    '  exit /b 1',
+    ')',
+    '',
+    ':: ── Validazione licenza online ─────────────────────────────────',
+    'echo  Verifica licenza...',
+    `set "LIC_SCRIPT=${LIC_CHECK_JS}"`,
+    'set "LIC_RESULT="',
+    'if not exist "%LIC_SCRIPT%" (',
+    '  echo  X Script di verifica licenza mancante. Reinstalla.',
+    '  pause',
+    '  exit /b 1',
+    ')',
+    'for /f "delims=" %%R in (\'""%NODE_EXE%" "%LIC_SCRIPT%""\') do set "LIC_RESULT=%%R"',
+    'if "%LIC_RESULT%"=="OK" (',
+    '  echo  [OK] Licenza attiva',
+    ') else if "%LIC_RESULT%"=="OFFLINE" (',
+    '  echo  [OFFLINE] Licenza non verificata - modalita offline',
+    ') else (',
+    '  echo.',
+    '  echo  X Licenza non attiva o revocata.',
+    '  echo  Contatta il supporto per riattivare il tuo accesso.',
+    '  echo.',
     '  pause',
     '  exit /b 1',
     ')',
@@ -748,6 +840,8 @@ ipcMain.on('get-version', event => {
 });
 
 // ── IPC: LICENZA ─────────────────────────────────────────────
+// All'avvio: se c'è licenza salvata, validala online con action=validate
+// (senza machine_id — solo verifica che la chiave sia ancora attiva).
 ipcMain.on('check-license', async event => {
   const saved = loadLicense();
   if (!saved?.key) {
@@ -755,30 +849,36 @@ ipcMain.on('check-license', async event => {
     return;
   }
   try {
-    const res = await apiPost({ action: 'check', license_key: saved.key, machine_id: getMachineId() });
+    const res = await apiPost({ action: 'validate', license_key: saved.key });
     if (res?.ok) {
-      event.sender.send('screen', { name: 'install', data: { name: res.customer_name } });
+      event.sender.send('screen', { name: 'install', data: { name: res.customer_name || saved.customer_name } });
     } else {
+      // Licenza revocata/sospesa lato server: cancella e richiedi reinserimento
       clearLicense();
       event.sender.send('screen', { name: 'license' });
     }
   } catch (_) {
-    // Errore di rete: mostra licenza per sicurezza
-    event.sender.send('screen', { name: 'license' });
+    // Errore di rete: usa la licenza salvata in fallback (modalità offline)
+    if (saved.customer_name) {
+      event.sender.send('screen', { name: 'install', data: { name: saved.customer_name } });
+    } else {
+      event.sender.send('screen', { name: 'license' });
+    }
   }
 });
 
+// Attivazione: usa machine_id per registrare la macchina (slot count).
 ipcMain.on('activate', async (event, { key }) => {
   try {
     const res = await apiPost({
-      action:       'activate',
-      license_key:  key,
-      machine_id:   getMachineId(),
-      machine_info: `${os.platform()} ${os.arch()} ${os.hostname()}`,
+      action:      'activate',
+      license_key: key,
+      machine_id:  getMachineId(),
     });
     if (res?.ok) {
-      saveLicense({ key });
-      event.sender.send('lic-result', { ok: true, customer_name: res.customer_name || 'Cliente' });
+      const customerName = res.customer_name || 'Cliente';
+      saveLicense({ key, customer_name: customerName });
+      event.sender.send('lic-result', { ok: true, customer_name: customerName });
     } else {
       event.sender.send('lic-result', { ok: false, error: res?.error || 'Chiave non valida' });
     }
