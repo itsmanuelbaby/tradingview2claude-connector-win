@@ -12,11 +12,27 @@ const fs   = require('fs');
 const os   = require('os');
 const path = require('path');
 
-const VAULT_DIR        = path.join(os.homedir(), 'Documents', 'TradingView2Claude Vault');
-const NOTES_DIR        = path.join(VAULT_DIR, 'Analisi');
-const LESSONS_FILE     = path.join(VAULT_DIR, 'Lezioni.md');
-const PREVISIONS_FILE  = path.join(VAULT_DIR, 'Previsioni.md');
-const README_FILE      = path.join(VAULT_DIR, 'Leggimi.md');
+// Path del vault. Può essere sovrascritto da main.js via setDocumentsBase()
+// per gestire redirezioni note (es. OneDrive sposta Documents in
+// %USERPROFILE%\OneDrive\Documents). Fallback ~/Documents.
+let DOCUMENTS_BASE = path.join(os.homedir(), 'Documents');
+let VAULT_DIR, NOTES_DIR, LESSONS_FILE, PREVISIONS_FILE, README_FILE;
+
+function recomputePaths() {
+  VAULT_DIR        = path.join(DOCUMENTS_BASE, 'TradingView2Claude Vault');
+  NOTES_DIR        = path.join(VAULT_DIR, 'Analisi');
+  LESSONS_FILE     = path.join(VAULT_DIR, 'Lezioni.md');
+  PREVISIONS_FILE  = path.join(VAULT_DIR, 'Previsioni.md');
+  README_FILE      = path.join(VAULT_DIR, 'Leggimi.md');
+}
+recomputePaths();
+
+function setDocumentsBase(p) {
+  if (p && typeof p === 'string') {
+    DOCUMENTS_BASE = p;
+    recomputePaths();
+  }
+}
 
 const MAX_NOTES_IN_CONTEXT = 5;   // quante analisi passate reiniettare
 const MAX_NOTE_CHARS       = 900; // troncamento per nota nel contesto
@@ -230,7 +246,8 @@ function extractPredictions(answer) {
 }
 
 module.exports = {
-  VAULT_DIR,
+  get VAULT_DIR() { return VAULT_DIR; },  // getter dinamico (cambia con setDocumentsBase)
+  setDocumentsBase,
   ensureVault,
   buildContext,
   saveNote,

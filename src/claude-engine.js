@@ -237,37 +237,85 @@ function ask(userMessage, handlers) {
     }
   } catch (e) { log('memory context error: ' + e.message); }
 
-  const args = [
-    '-p', prompt,
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--model', currentModel,
-    '--allowedTools', 'mcp__tradingview-mcp__*,WebSearch',
-  ];
-  if (sessionId) args.push('--resume', sessionId);
-
-  // Persona personalizzata (append: mantiene la consapevolezza degli strumenti)
+  // Persona personalizzata
+  let persona = '';
   try {
     let pf = personaFileFor(currentLang);
     if (!fs.existsSync(pf)) pf = personaFileFor('it'); // fallback
-    if (fs.existsSync(pf)) {
-      const persona = fs.readFileSync(pf, 'utf8');
-      if (persona.trim()) args.push('--append-system-prompt', persona);
-    }
+    if (fs.existsSync(pf)) persona = fs.readFileSync(pf, 'utf8');
   } catch (_) {}
 
-  log(`SPAWN ${claude} (sessione: ${sessionId || 'nuova'})`);
+  log(`SPAWN ${claude} (sessione: ${sessionId || 'nuova'}, piattaforma: ${process.platform})`);
 
   let child;
   try {
-    // Windows: i wrapper .cmd/.bat richiedono shell:true. Su POSIX no
-    // (più sicuro e gestisce meglio segnali/argomenti con caratteri speciali).
-    child = spawn(claude, args, {
-      cwd: HOME,
-      env: buildEnv(),
-      shell: IS_WIN,
-      windowsHide: true,
-    });
+    if (IS_WIN) {
+      // ── WINDOWS ──────────────────────────────────────────────────
+      // Passare prompt e persona come argomenti su Windows è RISCHIOSO:
+      // cmd.exe interpreta newline come fine comando e maltratta apostrofi
+      // e accenti. Scriviamo i due testi in file temporanei e li passiamo a
+      // claude attraverso PowerShell, che li legge nativamente (Get-Content
+      // -Raw) e li inoltra senza alterazioni.
+      const tmpDir = os.tmpdir();
+      const promptFile  = path.join(tmpDir, 'tv2c_prompt.txt');
+      const personaFile = path.join(tmpDir, 'tv2c_persona.txt');
+      try {
+        fs.writeFileSync(promptFile, prompt, 'utf8');
+        if (persona.trim()) fs.writeFileSync(personaFile, persona, 'utf8');
+        else { try { fs.unlinkSync(personaFile); } catch (_) {} }
+      } catch (e) {
+        handlers.onError('Impossibile preparare il prompt per l\'analisi.');
+        return;
+      }
+      // Quoting PowerShell: ' è l'unico carattere speciale dentro single-quoted
+      // strings; viene escapato raddoppiandolo.
+      const psq = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+      const lines = [
+        // UTF-8 in entrambe le direzioni: previene mojibake dell'italiano
+        // e mantiene intatto lo stream NDJSON di Claude.
+        '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()',
+        '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()',
+        `$p = Get-Content -Raw -LiteralPath ${psq(promptFile)}`,
+        // Costruiamo gli args come array PowerShell (splatting nativo, no quoting)
+        `$cmdArgs = @('-p', $p, '--output-format', 'stream-json', '--verbose',` +
+        ` '--model', ${psq(currentModel)},` +
+        ` '--allowedTools', 'mcp__tradingview-mcp__*,WebSearch')`,
+      ];
+      if (sessionId) {
+        lines.push(`$cmdArgs += @('--resume', ${psq(sessionId)})`);
+      }
+      if (persona.trim()) {
+        lines.push(`$sp = Get-Content -Raw -LiteralPath ${psq(personaFile)}`);
+        lines.push(`$cmdArgs += @('--append-system-prompt', $sp)`);
+      }
+      lines.push(`& ${psq(claude)} @cmdArgs`);
+      const psCmd = lines.join('; ');
+
+      child = spawn('powershell.exe', [
+        '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-Command', psCmd,
+      ], {
+        cwd: HOME,
+        env: buildEnv(),
+        shell: false,        // powershell.exe è un .exe → spawn diretto
+        windowsHide: true,
+      });
+    } else {
+      // ── macOS / Linux ────────────────────────────────────────────
+      // spawn diretto: niente shell di mezzo, args passati raw al processo.
+      // Sicuro anche con prompt/persona multiline.
+      const args = [
+        '-p', prompt,
+        '--output-format', 'stream-json',
+        '--verbose',
+        '--model', currentModel,
+        '--allowedTools', 'mcp__tradingview-mcp__*,WebSearch',
+      ];
+      if (sessionId) args.push('--resume', sessionId);
+      if (persona.trim()) args.push('--append-system-prompt', persona);
+
+      child = spawn(claude, args, { cwd: HOME, env: buildEnv() });
+    }
   } catch (e) {
     log(`ERRORE spawn: ${e.message}`);
     handlers.onError('Impossibile avviare il motore di analisi.');

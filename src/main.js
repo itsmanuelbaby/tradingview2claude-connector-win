@@ -77,11 +77,16 @@ function getBundledNodePath() {
 // ── Helper: run processo ─────────────────────────────────────────
 function run(cmd, args = [], opts = {}) {
   return new Promise((resolve, reject) => {
-    const { cwd, ignoreError, env } = opts;
+    const { cwd, ignoreError, env, shell } = opts;
     const mergedEnv = { ...process.env, ...env };
+    // shell:true serve su Windows SOLO per .cmd/.bat. Per .exe (powershell,
+    // node, ecc.) usare shell:false evita che cmd intercetti pipe/redirezioni.
+    const needsShell = (shell !== undefined)
+      ? shell
+      : (IS_WIN && /\.(cmd|bat)$/i.test(cmd));
     const child = spawn(cmd, args, {
       cwd: cwd || HOME,
-      shell: IS_WIN, // .cmd/.bat su Windows richiedono shell
+      shell: needsShell,
       env: mergedEnv,
       windowsHide: true,
     });
@@ -326,13 +331,15 @@ async function step3_claude() {
   sendLog('Installazione di Claude Code in corso...', mainWin);
 
   if (IS_WIN) {
-    // Windows: installer ufficiale Anthropic via PowerShell
-    // `irm https://claude.ai/install.ps1 | iex` — scarica claude.exe in ~/.local/bin
+    // Windows: installer ufficiale Anthropic via PowerShell.
+    // IMPORTANTE: shell:false → spawn diretto. Se usassimo shell:true cmd.exe
+    // intercetterebbe il pipe `|` e proverebbe a piparlo a `iex` (comando cmd
+    // inesistente) prima ancora che PowerShell lo veda.
     try {
-      await run('powershell', [
+      await run('powershell.exe', [
         '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
         "irm https://claude.ai/install.ps1 | iex"
-      ], { cwd: HOME, ignoreError: false });
+      ], { cwd: HOME, ignoreError: false, shell: false });
     } catch (e) {
       writeLog(`[step3] installer nativo PowerShell: ${e.message}`);
     }
@@ -509,7 +516,10 @@ async function generateDiagnosticReport() {
   L.push('');
   L.push('── Vault memoria ──');
   try {
-    const vault = path.join(HOME, 'Documents', 'TradingView2Claude Vault');
+    // Stessa logica OneDrive-aware del setDocumentsBase
+    let docsBase = path.join(HOME, 'Documents');
+    try { docsBase = app.getPath('documents'); } catch (_) {}
+    const vault = path.join(docsBase, 'TradingView2Claude Vault');
     if (fs.existsSync(vault)) {
       L.push('Cartella: ' + vault);
       const adir = path.join(vault, 'Analisi');
@@ -541,8 +551,11 @@ async function generateDiagnosticReport() {
   L.push('── Ultime righe del log chat ──');
   L.push(tailLog(path.join(LOG_DIR, 'chat.log'), 80));
 
-  let desktop = path.join(HOME, 'Desktop');
-  try { desktop = fs.realpathSync(desktop); } catch { desktop = HOME; }
+  // OneDrive-aware: app.getPath risolve il vero Desktop dell'utente
+  let desktop;
+  try { desktop = app.getPath('desktop'); } catch { desktop = path.join(HOME, 'Desktop'); }
+  try { desktop = fs.realpathSync(desktop); } catch { /* keep */ }
+  if (!fs.existsSync(desktop)) desktop = HOME;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
   const reportPath = path.join(desktop, `TradingView2Claude-Report-${stamp}.txt`);
   fs.writeFileSync(reportPath, L.join('\n'));
@@ -701,7 +714,13 @@ app.whenReady().then(async () => {
   writeLog('=== APP AVVIATA ===');
   writeLog(`Versione: ${app.getVersion()}`);
   writeLog(`Piattaforma: ${process.platform} ${process.arch}`);
-  try { require('./memory').ensureVault(); } catch (_) {}
+  try {
+    const memory = require('./memory');
+    // Su Windows con OneDrive, Documents è in %USERPROFILE%\OneDrive\Documents
+    // — app.getPath('documents') risolve correttamente per ogni configurazione.
+    try { memory.setDocumentsBase(app.getPath('documents')); } catch (_) {}
+    memory.ensureVault();
+  } catch (_) {}
 
   // Flusso di avvio: dashboard se licenza valida e setup completo,
   // altrimenti schermata di setup/licenza.
