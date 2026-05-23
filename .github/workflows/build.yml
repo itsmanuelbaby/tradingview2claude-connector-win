@@ -19,6 +19,9 @@ jobs:
       - name: Setup bundled-mcp (clona + patch webview + npm install)
         shell: pwsh
         run: |
+          # La cartella esiste (con .gitkeep) per soddisfare extraResources;
+          # serve svuotarla prima del clone.
+          if (Test-Path bundled-mcp) { Remove-Item -Recurse -Force bundled-mcp }
           git clone --depth 1 https://github.com/LewisWJackson/tradingview-mcp-jackson bundled-mcp
           # Patch: l'MCP accetta solo target type=='page'; il TradingView incorporato
           # via <webview> in Electron è di tipo 'webview'. Aggiungiamo il supporto.
@@ -36,10 +39,11 @@ jobs:
           $ver = "v22.11.0"
           $url = "https://nodejs.org/dist/$ver/node-$ver-win-x64.zip"
           $zip = "$env:TEMP\node-win.zip"
+          # Pulizia: la cartella ha solo .gitkeep, serve vuota per Expand-Archive
+          if (Test-Path bundled-node) { Remove-Item -Recurse -Force bundled-node }
           New-Item -ItemType Directory -Force -Path bundled-node | Out-Null
           Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
           Expand-Archive -Path $zip -DestinationPath bundled-node -Force
-          # Rinomina la cartella estratta in node-win-x64 (atteso da main.js)
           Rename-Item -Path "bundled-node/node-$ver-win-x64" -NewName "node-win-x64"
           if (-not (Test-Path "bundled-node/node-win-x64/node.exe")) {
             throw "node.exe non trovato dopo l'estrazione"
