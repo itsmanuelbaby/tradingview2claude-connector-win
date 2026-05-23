@@ -1,7 +1,10 @@
 node_modules/
 dist/
-bundled-node/
+bundled-mcp/*
+!bundled-mcp/.gitkeep
+bundled-node/*
+!bundled-node/.gitkeep
 *.blockmap
 *.dmg
 *.exe
-bundled-mcp/node_modules/
+.DS_Store

@@ -1,6 +1,6 @@
 {
   "name": "tradingview2claude-connector",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "TradingView2Claude Connector — Analisi AI del mercato in tempo reale",
   "author": "TradingView2Claude",
   "main": "src/main.js",
@@ -23,28 +23,24 @@
       "target": [
         {
           "target": "nsis",
-          "arch": [
-            "x64"
-          ]
+          "arch": ["x64"]
         }
       ],
       "icon": "assets/icon.ico",
-      "requestedExecutionLevel": "requireAdministrator",
       "artifactName": "TradingView2Claude-Setup-${version}.exe"
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
+      "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false,
-      "createDesktopShortcut": false,
-      "createStartMenuShortcut": true
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TradingView2Claude Connector"
     },
     "extraResources": [
-      {
-        "from": "bundled-mcp",
-        "to": "bundled-mcp"
-      }
+      { "from": "bundled-mcp",  "to": "bundled-mcp" },
+      { "from": "bundled-node", "to": "bundled-node" }
     ]
   },
   "devDependencies": {
