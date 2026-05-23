@@ -160,28 +160,61 @@ function createDashboardWindow() {
   dashWin.on('closed', () => { dashWin = null; });
 }
 
-// ── Trova Claude (cross-platform) ────────────────────────────────
+// ── Aggiorna PATH leggendo da registry user+machine (Windows) ────
+// L'installer Anthropic aggiunge il binario al PATH user via registry,
+// ma il process Electron ha la sua cache PATH presa allo startup.
+// Senza refresh, `where claude` continuerebbe a non vederlo.
+async function refreshWinPath() {
+  if (!IS_WIN) return;
+  try {
+    const sys = await runQ('powershell -NoProfile -ExecutionPolicy Bypass -Command "[Environment]::GetEnvironmentVariable(\'PATH\',\'Machine\')"');
+    const usr = await runQ('powershell -NoProfile -ExecutionPolicy Bypass -Command "[Environment]::GetEnvironmentVariable(\'PATH\',\'User\')"');
+    const merged = [sys, usr, process.env.PATH].filter(Boolean).join(';');
+    if (merged) process.env.PATH = merged;
+  } catch (_) {}
+}
+
+// ── Trova Claude (cross-platform, esaustivo per Windows) ─────────
 async function findClaude() {
   if (IS_WIN) {
     const APPDATA = process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
     const LOCAL   = process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local');
     const PF      = process.env.ProgramFiles || 'C:\\Program Files';
+    const PFx86   = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    // L'installer ufficiale Anthropic (install.ps1) usa il path .claude/.
+    // L'install via npm globale usa %APPDATA%\npm. L'install via App Installer
+    // o MSI può finire in Program Files. Coprire tutte le combinazioni note.
     const candidates = [
+      // Installer nativo Anthropic (vari layout possibili: .local/.bin/ direct)
+      path.join(HOME, '.claude', 'local', 'claude.exe'),
+      path.join(HOME, '.claude', 'bin', 'claude.exe'),
+      path.join(HOME, '.claude', 'claude.exe'),
       path.join(HOME, '.local', 'bin', 'claude.exe'),
       path.join(HOME, '.local', 'bin', 'claude.cmd'),
       path.join(HOME, '.local', 'bin', 'claude'),
+      // npm globale
       path.join(APPDATA, 'npm', 'claude.cmd'),
       path.join(LOCAL,   'npm', 'claude.cmd'),
+      // MSI / Program Files
+      path.join(LOCAL, 'Programs', 'Claude', 'claude.exe'),
+      path.join(LOCAL, 'Programs', 'claude', 'claude.exe'),
+      path.join(LOCAL, 'Anthropic', 'Claude', 'claude.exe'),
+      path.join(PF, 'Anthropic', 'Claude', 'claude.exe'),
+      path.join(PFx86, 'Anthropic', 'Claude', 'claude.exe'),
       path.join(PF, 'nodejs', 'claude.cmd'),
     ];
     for (const p of candidates) {
       if (fs.existsSync(p)) return p;
     }
+    // Fallback 1: where (legge da PATH process)
     const w = await runQ('where claude');
     if (w) {
       const first = w.split(/\r?\n/)[0].trim();
       if (first && fs.existsSync(first)) return first;
     }
+    // Fallback 2: Get-Command in PowerShell (più affidabile per .ps1/.cmd)
+    const gc = await runQ('powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-Command claude -ErrorAction SilentlyContinue).Source"');
+    if (gc && fs.existsSync(gc.trim())) return gc.trim();
     return null;
   }
   // ── macOS ──
@@ -358,10 +391,33 @@ async function step3_claude() {
     }
   }
 
+  // Attendi un attimo per la scrittura su disco + registry, poi
+  // aggiorna PATH per raccogliere modifiche fatte dall'installer.
   await new Promise(r => setTimeout(r, 2500));
+  await refreshWinPath();
   claudePath = await findClaude();
+
+  // Retry più lungo + secondo refresh PATH (su PC lenti l'installer
+  // può impiegare di più a registrare il binario).
+  if (!claudePath) {
+    sendLog('Verifica installazione in corso...', mainWin);
+    await new Promise(r => setTimeout(r, 4000));
+    await refreshWinPath();
+    claudePath = await findClaude();
+  }
+
   if (claudePath) {
-    sendLog(`Claude Code installato: ${claudePath}`, mainWin);
+    // Verifica funzionante: --version deve rispondere. Se il binario c'è
+    // ma è broken (dipendenza mancante, AV in quarantena, ecc.), meglio
+    // saperlo subito invece di fallire nella prima chat.
+    const vCmd = IS_WIN ? `"${claudePath}" --version` : `"${claudePath}" --version`;
+    const v = await runQ(vCmd, 8000);
+    if (v) {
+      sendLog(`Claude Code installato: ${claudePath} (${v.split('\n')[0]})`, mainWin);
+    } else {
+      sendLog(`Claude Code installato ma non risponde a --version: ${claudePath}`, mainWin);
+      writeLog('[step3] WARNING: claude --version non risponde — potrebbe avere problemi');
+    }
     return claudePath;
   }
 
@@ -721,6 +777,10 @@ app.whenReady().then(async () => {
     try { memory.setDocumentsBase(app.getPath('documents')); } catch (_) {}
     memory.ensureVault();
   } catch (_) {}
+
+  // File temp per prompt/persona dentro la userData dell'app
+  // (più stabile di TEMP, mai pulita dal sistema, sempre scrivibile).
+  try { claudeEngine.setTempDir(app.getPath('userData')); } catch (_) {}
 
   // Flusso di avvio: dashboard se licenza valida e setup completo,
   // altrimenti schermata di setup/licenza.

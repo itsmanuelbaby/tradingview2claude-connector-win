@@ -50,6 +50,18 @@ function setLang(l) {
   }
 }
 
+// Directory per file temporanei (prompt/persona).
+// Default: os.tmpdir() (rispetta TEMP env var, OneDrive-aware su Win).
+// main.js può sovrascriverlo con app.getPath('userData') per usare un path
+// dedicato all'app — più stabile, non viene mai pulito.
+let TEMP_DIR = os.tmpdir();
+function setTempDir(p) {
+  if (p && typeof p === 'string') {
+    try { fs.mkdirSync(p, { recursive: true }); } catch (_) {}
+    TEMP_DIR = p;
+  }
+}
+
 // ── Log diagnostico ──────────────────────────────────────────────
 function log(msg) {
   try {
@@ -61,30 +73,49 @@ function log(msg) {
 // ── Trova il binario `claude` (universale, cross-platform) ───────
 function findClaudeBinary() {
   if (IS_WIN) {
-    // Windows: l'installer nativo Anthropic mette il binario in
-    // %USERPROFILE%\.local\bin\claude.exe (o .cmd). Altri path: npm globale.
+    // Tutti i path dove gli installer noti mettono il binario:
+    // - Installer ufficiale Anthropic (irm install.ps1): .claude\local o .claude\bin
+    // - install via npm globale: %APPDATA%\npm o %LOCALAPPDATA%\npm
+    // - MSI / Program Files
     const APPDATA = process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
     const LOCAL   = process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local');
     const PF      = process.env.ProgramFiles || 'C:\\Program Files';
+    const PFx86   = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
     const candidates = [
+      path.join(HOME, '.claude', 'local', 'claude.exe'),
+      path.join(HOME, '.claude', 'bin', 'claude.exe'),
+      path.join(HOME, '.claude', 'claude.exe'),
       path.join(HOME, '.local', 'bin', 'claude.exe'),
       path.join(HOME, '.local', 'bin', 'claude.cmd'),
       path.join(HOME, '.local', 'bin', 'claude'),
       path.join(APPDATA, 'npm', 'claude.cmd'),
       path.join(APPDATA, 'npm', 'claude.exe'),
       path.join(LOCAL,   'npm', 'claude.cmd'),
+      path.join(LOCAL, 'Programs', 'Claude', 'claude.exe'),
+      path.join(LOCAL, 'Programs', 'claude', 'claude.exe'),
+      path.join(LOCAL, 'Anthropic', 'Claude', 'claude.exe'),
+      path.join(PF, 'Anthropic', 'Claude', 'claude.exe'),
+      path.join(PFx86, 'Anthropic', 'Claude', 'claude.exe'),
       path.join(PF, 'nodejs', 'claude.cmd'),
     ];
     for (const c of candidates) {
       try { if (fs.existsSync(c)) return c; } catch (_) {}
     }
-    // where claude (cmd builtin)
+    // Fallback 1: where claude (cmd builtin)
     try {
       const w = execSync('where claude', { encoding: 'utf8' }).trim();
       if (w) {
         const first = w.split(/\r?\n/)[0].trim();
         if (first && fs.existsSync(first)) return first;
       }
+    } catch (_) {}
+    // Fallback 2: Get-Command (PowerShell, più affidabile per .cmd/.ps1)
+    try {
+      const gc = execSync(
+        'powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-Command claude -ErrorAction SilentlyContinue).Source"',
+        { encoding: 'utf8', timeout: 8000 }
+      ).trim();
+      if (gc && fs.existsSync(gc)) return gc;
     } catch (_) {}
     return null;
   }
@@ -256,9 +287,8 @@ function ask(userMessage, handlers) {
       // e accenti. Scriviamo i due testi in file temporanei e li passiamo a
       // claude attraverso PowerShell, che li legge nativamente (Get-Content
       // -Raw) e li inoltra senza alterazioni.
-      const tmpDir = os.tmpdir();
-      const promptFile  = path.join(tmpDir, 'tv2c_prompt.txt');
-      const personaFile = path.join(tmpDir, 'tv2c_persona.txt');
+      const promptFile  = path.join(TEMP_DIR, 'tv2c_prompt.txt');
+      const personaFile = path.join(TEMP_DIR, 'tv2c_persona.txt');
       try {
         fs.writeFileSync(promptFile, prompt, 'utf8');
         if (persona.trim()) fs.writeFileSync(personaFile, persona, 'utf8');
@@ -394,7 +424,12 @@ function ask(userMessage, handlers) {
 function humanizeError(raw) {
   const t = String(raw).toLowerCase();
   if (/login|auth|unauthor|not logged|credential/.test(t)) {
-    return 'Devi accedere a Claude per usare l\'assistente. Completa l\'accesso e riprova.';
+    // Spiega ESATTAMENTE come fare login: l'utente apre il terminale del suo
+    // sistema, digita `claude`, e segue il browser per l'OAuth.
+    const term = IS_WIN ? 'PowerShell' : 'il Terminale';
+    return 'Devi accedere al tuo account Claude per usare l\'assistente.\n\n'
+         + 'Apri ' + term + ', scrivi:  claude  \ne premi Invio. '
+         + 'Si aprirà il browser per il login. Al termine torna qui e riprova.';
   }
   if (/network|econn|timeout|fetch failed|enotfound/.test(t)) {
     return 'Connessione assente o instabile. Controlla la rete e riprova.';
@@ -411,4 +446,4 @@ function reset() {
   log('Sessione azzerata');
 }
 
-module.exports = { ask, reset, setModel, setLang, findClaudeBinary };
+module.exports = { ask, reset, setModel, setLang, setTempDir, findClaudeBinary };
