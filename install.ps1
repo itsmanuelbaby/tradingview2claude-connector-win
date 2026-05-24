@@ -31,6 +31,36 @@ Write-Host "  +================================================+" -ForegroundCol
 Write-Host "  |     TradingView2Claude Connector — Installer    |" -ForegroundColor DarkYellow
 Write-Host "  +================================================+" -ForegroundColor DarkYellow
 
+# ── 0. Disinstallazione versione precedente (se presente) ───────
+# Garantisce che il cliente esegua davvero la nuova build, senza
+# rischio di mix tra vecchia e nuova.
+# Licenza, vault Obsidian e config Claude restano intatti
+# (vivono in %USERPROFILE%\, non nella cartella programmi).
+$AppName = 'TradingView2Claude Connector'
+$InstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
+$Uninstaller = Join-Path $InstallDir "Uninstall $AppName.exe"
+
+$running = Get-Process -Name 'TradingView2Claude*' -ErrorAction SilentlyContinue
+if ($running -or (Test-Path $InstallDir)) {
+  Write-Step "Rimozione versione precedente..."
+  if ($running) {
+    Write-Host "  Chiusura app in esecuzione..."
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+  }
+  if (Test-Path $Uninstaller) {
+    Write-Host "  Esecuzione uninstaller NSIS (silent)..."
+    Start-Process -FilePath $Uninstaller -ArgumentList '/S' -Wait -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+  }
+  # Fallback: rimuovi cartella residua (se uninstaller mancante o fallito)
+  if (Test-Path $InstallDir) {
+    Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
+  }
+  Write-Ok "Versione precedente rimossa."
+  Write-Host "  (Licenza, memoria e login Claude preservati)" -ForegroundColor DarkGray
+}
+
 # ── 1. Prepara la cartella temporanea ────────────────────────────
 Write-Step "Preparazione..."
 if (-not (Test-Path $DEST_DIR)) { New-Item -ItemType Directory -Path $DEST_DIR | Out-Null }
