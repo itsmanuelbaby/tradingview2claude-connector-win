@@ -497,10 +497,14 @@ async function runInstall() {
     stepEvent(3, 'running');
     try {
       await step4_login();
+      markSetupAcknowledged();
       stepEvent(3, 'done'); progress(100);
       mainWin?.webContents.send('done', { ok: true });
     } catch (e) {
-      if (/login richiesto/i.test(e.message)) {
+      if (e.alreadyLoggedIn) {
+        stepEvent(3, 'waiting');
+        mainWin?.webContents.send('await-confirm', { msg: e.message, email: e.email });
+      } else if (/login richiesto/i.test(e.message)) {
         stepEvent(3, 'waiting');
         mainWin?.webContents.send('await-login', { msg: e.message });
       } else { throw e; }
@@ -518,16 +522,56 @@ ipcMain.on('retry-login', async () => {
   stepEvent(3, 'running');
   try {
     await step4_login();
+    markSetupAcknowledged();
     stepEvent(3, 'done'); progress(100);
     mainWin?.webContents.send('done', { ok: true });
   } catch (e) {
-    if (/login richiesto/i.test(e.message)) {
+    if (e.alreadyLoggedIn) {
+      stepEvent(3, 'waiting');
+      mainWin?.webContents.send('await-confirm', { msg: e.message, email: e.email });
+    } else if (/login richiesto/i.test(e.message)) {
       stepEvent(3, 'waiting');
       mainWin?.webContents.send('await-login', { msg: e.message });
     } else {
       writeLog(`[ERRORE retry-login] ${e.stack || e.message}`);
       mainWin?.webContents.send('done', { ok: false, msg: e.message });
     }
+  }
+});
+
+// Conferma login esistente: l'utente era già loggato e preme "Continua"
+ipcMain.on('confirm-existing-login', () => {
+  function stepEvent(i, s) { mainWin?.webContents.send('step', { index: i, status: s }); }
+  function progress(p)     { mainWin?.webContents.send('progress', p); }
+  if (isClaudeLoggedIn()) {
+    markSetupAcknowledged();
+    stepEvent(3, 'done'); progress(100);
+    mainWin?.webContents.send('done', { ok: true });
+  } else {
+    stepEvent(3, 'waiting');
+    mainWin?.webContents.send('await-login', {
+      msg: 'Non risulti più loggato. Apri il Terminale e fai login a Claude.'
+    });
+  }
+});
+
+// IPC dashboard: chi è loggato? (per popup benvenuto)
+ipcMain.handle('claude:get-account', () => getClaudeAccount());
+
+// IPC dashboard: apre Terminale/PowerShell con `claude` per fare login
+ipcMain.on('open-claude-login-terminal', async () => {
+  if (IS_MAC) {
+    try {
+      await run('osascript', [
+        '-e', 'tell application "Terminal" to activate',
+        '-e', 'tell application "Terminal" to do script "claude"',
+      ], { ignoreError: true });
+    } catch (_) {}
+  } else if (IS_WIN) {
+    try {
+      await run('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-Command', 'claude'],
+        { ignoreError: true, shell: false });
+    } catch (_) {}
   }
 });
 
@@ -539,7 +583,9 @@ async function isSetupComplete() {
     const cfg = JSON.parse(fs.readFileSync(path.join(HOME, '.claude.json'), 'utf8'));
     const hasMcp = !!(cfg && cfg.mcpServers && cfg.mcpServers['tradingview-mcp']);
     const isLogged = !!(cfg && cfg.oauthAccount && cfg.oauthAccount.emailAddress);
-    return hasMcp && isLogged;
+    // Flag setup_done richiesto: primo avvio dopo install deve passare per
+    // la schermata di benvenuto/conferma anche se già loggato.
+    return hasMcp && isLogged && isSetupAcknowledged();
   } catch {
     return false;
   }
@@ -564,6 +610,31 @@ function getClaudeUserEmail() {
   } catch { return null; }
 }
 
+// Restituisce informazioni complete sull'account Claude per il popup di benvenuto
+function getClaudeAccount() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(HOME, '.claude.json'), 'utf8'));
+    const o = cfg?.oauthAccount;
+    if (o && o.emailAddress) {
+      return {
+        loggedIn: true,
+        email: o.emailAddress,
+        displayName: o.displayName || o.emailAddress.split('@')[0],
+        organization: o.organizationName || null,
+      };
+    }
+  } catch (_) {}
+  return { loggedIn: false };
+}
+
+// ── Flag "setup obbligatorio completato" ────────────────────────
+const SETUP_DONE_FLAG = path.join(HOME, '.tv2claude_setup_done');
+function isSetupAcknowledged() { return fs.existsSync(SETUP_DONE_FLAG); }
+function markSetupAcknowledged() {
+  try { fs.writeFileSync(SETUP_DONE_FLAG, new Date().toISOString()); }
+  catch (e) { writeLog('setup-flag write error: ' + e.message); }
+}
+
 // ── Step 4: Login Claude (apre Terminale per OAuth interattivo) ──
 // Claude headless (-p) non può fare OAuth: serve una sessione TTY.
 // Apriamo Terminal.app (Mac) o PowerShell (Win) con `claude` per scatenare
@@ -571,9 +642,18 @@ function getClaudeUserEmail() {
 // state cambi (campo oauthAccount in ~/.claude.json).
 async function step4_login() {
   if (isClaudeLoggedIn()) {
+    if (isSetupAcknowledged()) {
+      const email = getClaudeUserEmail();
+      sendLog(`Accesso Claude già attivo${email ? ' (' + email + ')' : ''}`, mainWin);
+      return;
+    }
+    // Primo avvio dopo install: anche se loggato, l'utente deve confermare
     const email = getClaudeUserEmail();
-    sendLog(`Accesso Claude già attivo${email ? ' (' + email + ')' : ''}`, mainWin);
-    return;
+    sendLog(`Già loggato a Claude come ${email}. Conferma richiesta.`, mainWin);
+    const e = new Error('Conferma richiesta: sei già loggato a Claude. Premi "Continua" per confermare e procedere.');
+    e.alreadyLoggedIn = true;
+    e.email = email;
+    throw e;
   }
   sendLog('Apro una finestra di terminale per il login Claude (browser OAuth)...', mainWin);
 
