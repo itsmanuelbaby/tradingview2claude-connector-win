@@ -23,10 +23,26 @@ jobs:
           # serve svuotarla prima del clone.
           if (Test-Path bundled-mcp) { Remove-Item -Recurse -Force bundled-mcp }
           git clone --depth 1 https://github.com/LewisWJackson/tradingview-mcp-jackson bundled-mcp
-          # Patch: l'MCP accetta solo target type=='page'; il TradingView incorporato
-          # via <webview> in Electron è di tipo 'webview'. Aggiungiamo il supporto.
-          $conn = "bundled-mcp/src/connection.js"
-          (Get-Content $conn -Raw) -replace "t\.type === 'page'", "(t.type === 'page' || t.type === 'webview')" | Set-Content $conn -NoNewline
+          # Il TradingView incorporato via <webview> in Electron è di tipo
+          # 'webview' nei target CDP. Il pattern "t.type === 'page'" appare in
+          # più file MCP (connection.js, core/tab.js, ...). Patchiamo TUTTI i
+          # .js sotto src/ per essere robusti a modifiche future upstream.
+          $files = Get-ChildItem -Recurse -Path "bundled-mcp/src" -Filter *.js
+          $patchedCount = 0
+          foreach ($f in $files) {
+            $content = Get-Content $f.FullName -Raw
+            if ($content -match "t\.type === 'page'") {
+              $new = $content -replace "t\.type === 'page'", "(t.type === 'page' || t.type === 'webview')"
+              Set-Content -NoNewline -Path $f.FullName -Value $new
+              $patchedCount++
+              Write-Host "Patched: $($f.FullName)"
+            }
+          }
+          Write-Host "File MCP patchati: $patchedCount"
+          if ($patchedCount -lt 2) {
+            Write-Error "Patch incompleta: atteso almeno 2 file, trovati $patchedCount"
+            exit 1
+          }
           Push-Location bundled-mcp
           npm install --no-audit --no-fund
           Pop-Location
