@@ -560,16 +560,19 @@ ipcMain.handle('claude:get-account', () => getClaudeAccount());
 
 // IPC dashboard: apre Terminale/PowerShell con `claude` per fare login
 ipcMain.on('open-claude-login-terminal', async () => {
+  // Path assoluto (vedi commento in step4_login)
+  const claudeBin = await findClaude();
+  const claudeCmd = claudeBin || 'claude';
   if (IS_MAC) {
     try {
       await run('osascript', [
         '-e', 'tell application "Terminal" to activate',
-        '-e', 'tell application "Terminal" to do script "claude"',
+        '-e', `tell application "Terminal" to do script "${claudeCmd}"`,
       ], { ignoreError: true });
     } catch (_) {}
   } else if (IS_WIN) {
     try {
-      await run('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-Command', 'claude'],
+      await run('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-Command', claudeCmd],
         { ignoreError: true, shell: false });
     } catch (_) {}
   }
@@ -657,19 +660,24 @@ async function step4_login() {
   }
   sendLog('Apro una finestra di terminale per il login Claude (browser OAuth)...', mainWin);
 
+  // PATH ASSOLUTO al binario: l'installer Anthropic mette claude in
+  // ~/.local/bin/ o ~/.claude/local/ che NON è nel PATH di default della
+  // shell utente. Se passassimo solo "claude" il terminale risponderebbe
+  // "command not found" / "non riconosciuto come comando interno o esterno".
+  const claudeBin = await findClaude();
+  const claudeCmd = claudeBin || 'claude';
+
   if (IS_MAC) {
     try {
       await run('osascript', [
         '-e', 'tell application "Terminal" to activate',
-        '-e', 'tell application "Terminal" to do script "claude"',
+        '-e', `tell application "Terminal" to do script "${claudeCmd}"`,
       ], { ignoreError: true });
     } catch (_) {}
   } else if (IS_WIN) {
-    // Apre PowerShell interattivo con `claude` già digitato; -NoExit
-    // tiene la finestra aperta per il flusso OAuth.
     try {
       await run('cmd.exe',
-        ['/c', 'start', '', 'powershell.exe', '-NoExit', '-Command', 'claude'],
+        ['/c', 'start', '', 'powershell.exe', '-NoExit', '-Command', claudeCmd],
         { ignoreError: true, shell: false });
     } catch (_) {}
   }

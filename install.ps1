@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'   # Invoke-WebRequest molto più veloce
 
 $REPO        = 'itsmanuelbaby/tradingview2claude-connector-win'
-$ASSET_NAME  = 'TradingView2Claude-Setup-2.0.5.exe'
+$ASSET_NAME  = 'TradingView2Claude-Setup-2.0.6.exe'
 $DOWNLOAD    = "https://github.com/$REPO/releases/latest/download/$ASSET_NAME"
 $DEST_DIR    = Join-Path $env:TEMP 'TradingView2Claude-Install'
 $DEST_FILE   = Join-Path $DEST_DIR $ASSET_NAME
