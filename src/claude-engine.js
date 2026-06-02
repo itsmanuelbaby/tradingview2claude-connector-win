@@ -282,53 +282,59 @@ function ask(userMessage, handlers) {
   try {
     if (IS_WIN) {
       // ── WINDOWS ──────────────────────────────────────────────────
-      // Passare prompt e persona come argomenti su Windows è RISCHIOSO:
-      // cmd.exe interpreta newline come fine comando e maltratta apostrofi
-      // e accenti. Scriviamo i due testi in file temporanei e li passiamo a
-      // claude attraverso PowerShell, che li legge nativamente (Get-Content
-      // -Raw) e li inoltra senza alterazioni.
-      const promptFile  = path.join(TEMP_DIR, 'tv2c_prompt.txt');
-      const personaFile = path.join(TEMP_DIR, 'tv2c_persona.txt');
-      try {
-        fs.writeFileSync(promptFile, prompt, 'utf8');
-        if (persona.trim()) fs.writeFileSync(personaFile, persona, 'utf8');
-        else { try { fs.unlinkSync(personaFile); } catch (_) {} }
-      } catch (e) {
-        handlers.onError('Impossibile preparare il prompt per l\'analisi.');
-        return;
-      }
-      // Quoting PowerShell: ' è l'unico carattere speciale dentro single-quoted
-      // strings; viene escapato raddoppiandolo.
-      const psq = (s) => "'" + String(s).replace(/'/g, "''") + "'";
-      const lines = [
-        // UTF-8 in entrambe le direzioni: previene mojibake dell'italiano
-        // e mantiene intatto lo stream NDJSON di Claude.
-        '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()',
-        '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()',
-        `$p = Get-Content -Raw -LiteralPath ${psq(promptFile)}`,
-        // Costruiamo gli args come array PowerShell (splatting nativo, no quoting)
-        `$cmdArgs = @('-p', $p, '--output-format', 'stream-json', '--verbose',` +
-        ` '--model', ${psq(currentModel)},` +
-        ` '--allowedTools', 'mcp__tradingview-mcp__*,WebSearch')`,
+      // Strategy: spawn DIRETTO senza shell di mezzo. Node CreateProcess
+      // passa args raw (escape automatico di " interne, multiline preservato).
+      // - claude.exe: spawn diretto del binario nativo
+      // - claude.cmd: claude.cmd è solo `node cli.js %*` → estraiamo i path
+      //   e spawniamo node.exe direttamente. Eliminiamo cmd.exe/PowerShell:
+      //   entrambi possono bufferizzare/alterare lo stream NDJSON.
+      const args = [
+        '-p', prompt,
+        '--output-format', 'stream-json',
+        '--verbose',
+        '--model', currentModel,
+        '--allowedTools', 'mcp__tradingview-mcp__*,WebSearch',
       ];
-      if (sessionId) {
-        lines.push(`$cmdArgs += @('--resume', ${psq(sessionId)})`);
-      }
-      if (persona.trim()) {
-        lines.push(`$sp = Get-Content -Raw -LiteralPath ${psq(personaFile)}`);
-        lines.push(`$cmdArgs += @('--append-system-prompt', $sp)`);
-      }
-      lines.push(`& ${psq(claude)} @cmdArgs`);
-      const psCmd = lines.join('; ');
+      if (sessionId) args.push('--resume', sessionId);
+      if (persona.trim()) args.push('--append-system-prompt', persona);
 
-      child = spawn('powershell.exe', [
-        '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-        '-Command', psCmd,
-      ], {
+      let execTarget = claude;
+      let execArgs = args;
+
+      if (/\.cmd$/i.test(claude)) {
+        // Parse claude.cmd per estrarre node.exe + cli.js. Template tipico:
+        //   @"C:\Program Files\nodejs\node.exe"  "C:\...\node_modules\...\cli.js" %*
+        try {
+          const cmdContent = fs.readFileSync(claude, 'utf8');
+          // Match: due path quotati separati da spazi (node.exe e qualcosa.js)
+          const m = cmdContent.match(/"([^"]+(?:node\.exe|node))"\s+"([^"]+\.(?:js|mjs|cjs))"/i);
+          if (m) {
+            execTarget = m[1];
+            execArgs = [m[2], ...args];
+            log(`Estratto da .cmd: node=${execTarget}  cli=${m[2]}`);
+          } else {
+            // Fallback: se non riusciamo a parsare, usiamo cmd /c
+            // (con shell:false per evitare doppio quoting)
+            log('WARNING: claude.cmd non parsabile, uso cmd /c fallback');
+            execTarget = process.env.ComSpec || 'cmd.exe';
+            execArgs = ['/c', claude, ...args];
+          }
+        } catch (e) {
+          log(`Errore lettura claude.cmd: ${e.message}`);
+          execTarget = process.env.ComSpec || 'cmd.exe';
+          execArgs = ['/c', claude, ...args];
+        }
+      }
+      // Se .exe: spawn diretto del binario, niente da fare
+
+      log(`SPAWN exec: ${execTarget}`);
+      child = spawn(execTarget, execArgs, {
         cwd: HOME,
         env: buildEnv(),
-        shell: false,        // powershell.exe è un .exe → spawn diretto
+        shell: false,           // CRUCIALE: niente shell di mezzo
         windowsHide: true,
+        // Forza encoding UTF-8 lato Node per non avere mojibake
+        // sui dati italiani della persona
       });
     } else {
       // ── macOS / Linux ────────────────────────────────────────────
@@ -388,8 +394,19 @@ function ask(userMessage, handlers) {
     handlers.onDone();
   }
 
+  // Conta byte totali stdout/stderr per debug "claude esce senza output"
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let firstChunkLogged = false;
+
   child.stdout.on('data', (d) => {
-    stdoutBuf += d.toString();
+    stdoutBytes += d.length;
+    if (!firstChunkLogged) {
+      firstChunkLogged = true;
+      // Logga i primi 200 byte raw per capire se l'output è NDJSON o altro
+      log(`PRIMO CHUNK stdout (${d.length}b): ${d.toString('utf8').slice(0, 200).replace(/\n/g, '\\n')}`);
+    }
+    stdoutBuf += d.toString('utf8');
     let nl;
     while ((nl = stdoutBuf.indexOf('\n')) >= 0) {
       const line = stdoutBuf.slice(0, nl).trim();
@@ -398,7 +415,10 @@ function ask(userMessage, handlers) {
     }
   });
 
-  child.stderr.on('data', (d) => { stderrBuf += d.toString(); });
+  child.stderr.on('data', (d) => {
+    stderrBytes += d.length;
+    stderrBuf += d.toString('utf8');
+  });
 
   child.on('error', (e) => {
     log(`ERRORE processo: ${e.message}`);
@@ -407,13 +427,19 @@ function ask(userMessage, handlers) {
 
   child.on('close', (code) => {
     if (stdoutBuf.trim()) handleLine(stdoutBuf.trim(), state, handlers);
-    log(`CHIUSO code=${code} gotText=${state.gotText}`);
+    log(`CHIUSO code=${code} gotText=${state.gotText} stdout=${stdoutBytes}b stderr=${stderrBytes}b`);
     if (stderrBuf.trim()) log(`STDERR: ${stderrBuf.trim().slice(0, 500)}`);
 
     if (state.resultError && !state.gotText) {
       finish(humanizeError(state.resultError));
     } else if (code !== 0 && !state.gotText) {
       finish(humanizeError(stderrBuf || 'Il motore di analisi si è interrotto.'));
+    } else if (!state.gotText) {
+      // CASO BUG: exit 0 ma nessun testo né errore parsato → l'utente
+      // vedrebbe la chip sparire senza alcuna risposta. Loggiamo dettagli
+      // e mostriamo un errore utile invece di silenzio.
+      log(`BUG: exit 0 senza testo. stdoutBytes=${stdoutBytes} stderrBytes=${stderrBytes}`);
+      finish('L\'assistente non ha prodotto una risposta. Riprova; se il problema persiste invia il report diagnostico (?).');
     } else {
       finish(null);
     }
