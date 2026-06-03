@@ -62,6 +62,14 @@ function setTempDir(p) {
   }
 }
 
+// Path di Node.js bundled (settato da main.js). Su Windows è la via principale
+// per spawnare direttamente cli.js senza passare per cmd.exe (che rompe il
+// quoting di -p con prompt multiline).
+let BUNDLED_NODE = null;
+function setBundledNode(p) {
+  if (p && typeof p === 'string' && fs.existsSync(p)) BUNDLED_NODE = p;
+}
+
 // ── Log diagnostico ──────────────────────────────────────────────
 function log(msg) {
   try {
@@ -282,12 +290,16 @@ function ask(userMessage, handlers) {
   try {
     if (IS_WIN) {
       // ── WINDOWS ──────────────────────────────────────────────────
-      // Strategy: spawn DIRETTO senza shell di mezzo. Node CreateProcess
-      // passa args raw (escape automatico di " interne, multiline preservato).
-      // - claude.exe: spawn diretto del binario nativo
-      // - claude.cmd: claude.cmd è solo `node cli.js %*` → estraiamo i path
-      //   e spawniamo node.exe direttamente. Eliminiamo cmd.exe/PowerShell:
-      //   entrambi possono bufferizzare/alterare lo stream NDJSON.
+      // PROBLEMA: cmd.exe/PowerShell non passano -p con prompt MULTILINE
+      // correttamente. Risultato: Claude crede di non avere prompt, va in
+      // interactive mode, aspetta stdin 3s, poi genera testo plain (NON
+      // NDJSON) → la parser non vede blocchi text → utente vede chip
+      // "thinking" sparire senza risposta.
+      //
+      // SOLUZIONE: spawnare DIRETTAMENTE node.exe + cli.js. Node
+      // CreateProcess passa args via argv → multiline e accenti preservati.
+      // claude.cmd è solo un wrapper bat che chiama node + cli.js;
+      // bypassiamo il wrapper.
       const args = [
         '-p', prompt,
         '--output-format', 'stream-json',
@@ -302,25 +314,48 @@ function ask(userMessage, handlers) {
       let execArgs = args;
 
       if (/\.cmd$/i.test(claude)) {
-        // Parse claude.cmd per estrarre node.exe + cli.js. Template tipico:
-        //   @"C:\Program Files\nodejs\node.exe"  "C:\...\node_modules\...\cli.js" %*
-        try {
-          const cmdContent = fs.readFileSync(claude, 'utf8');
-          // Match: due path quotati separati da spazi (node.exe e qualcosa.js)
-          const m = cmdContent.match(/"([^"]+(?:node\.exe|node))"\s+"([^"]+\.(?:js|mjs|cjs))"/i);
-          if (m) {
-            execTarget = m[1];
-            execArgs = [m[2], ...args];
-            log(`Estratto da .cmd: node=${execTarget}  cli=${m[2]}`);
-          } else {
-            // Fallback: se non riusciamo a parsare, usiamo cmd /c
-            // (con shell:false per evitare doppio quoting)
-            log('WARNING: claude.cmd non parsabile, uso cmd /c fallback');
-            execTarget = process.env.ComSpec || 'cmd.exe';
-            execArgs = ['/c', claude, ...args];
-          }
-        } catch (e) {
-          log(`Errore lettura claude.cmd: ${e.message}`);
+        // Risoluzione cli.js via CONVENTION npm (più affidabile della regex):
+        // %APPDATA%\npm\claude.cmd  →  %APPDATA%\npm\node_modules\@anthropic-ai\claude-code\cli.js
+        const claudeDir = path.dirname(claude);
+        const cliCandidates = [
+          path.join(claudeDir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+          path.join(claudeDir, 'node_modules', '@anthropic-ai', 'claude-code', 'dist', 'cli.js'),
+          path.join(claudeDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'cli.js'),
+        ];
+        let cliJs = null;
+        for (const c of cliCandidates) {
+          if (fs.existsSync(c)) { cliJs = c; break; }
+        }
+        // Fallback: leggi claude.cmd e parsa (gestendo anche %~dp0 relativi)
+        if (!cliJs) {
+          try {
+            const cmdContent = fs.readFileSync(claude, 'utf8');
+            // Match path assoluto OPPURE relativo (%~dp0)
+            const absMatch = cmdContent.match(/"([A-Z]:\\[^"]+\.(?:js|mjs|cjs))"/i);
+            const relMatch = cmdContent.match(/"%~dp0[\\\/]?([^"]+\.(?:js|mjs|cjs))"/i);
+            if (absMatch) cliJs = absMatch[1];
+            else if (relMatch) cliJs = path.join(claudeDir, relMatch[1]);
+          } catch (_) {}
+        }
+        // Trova node.exe: 1) bundled, 2) accanto a claude.cmd, 3) system
+        const nodeCandidates = [
+          BUNDLED_NODE,
+          path.join(claudeDir, 'node.exe'),
+          path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
+          path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'nodejs', 'node.exe'),
+        ].filter(Boolean);
+        let nodeBin = null;
+        for (const n of nodeCandidates) {
+          if (fs.existsSync(n)) { nodeBin = n; break; }
+        }
+
+        if (cliJs && nodeBin) {
+          execTarget = nodeBin;
+          execArgs = [cliJs, ...args];
+          log(`Spawn DIRETTO: node=${nodeBin}  cli=${cliJs}`);
+        } else {
+          // Ultimo fallback (rotto per multiline, ma meglio di niente)
+          log(`WARNING: cli.js o node.exe non trovati (cli=${cliJs}, node=${nodeBin}) — fallback cmd /c`);
           execTarget = process.env.ComSpec || 'cmd.exe';
           execArgs = ['/c', claude, ...args];
         }
@@ -333,9 +368,11 @@ function ask(userMessage, handlers) {
         env: buildEnv(),
         shell: false,           // CRUCIALE: niente shell di mezzo
         windowsHide: true,
-        // Forza encoding UTF-8 lato Node per non avere mojibake
-        // sui dati italiani della persona
       });
+
+      // Chiudiamo stdin: senza prompt valido Claude aspetta stdin 3s
+      // e potrebbe entrare in interactive mode. Forziamo EOF immediato.
+      try { child.stdin.end(); } catch (_) {}
     } else {
       // ── macOS / Linux ────────────────────────────────────────────
       // spawn diretto: niente shell di mezzo, args passati raw al processo.
@@ -472,4 +509,4 @@ function reset() {
   log('Sessione azzerata');
 }
 
-module.exports = { ask, reset, setModel, setLang, setTempDir, findClaudeBinary };
+module.exports = { ask, reset, setModel, setLang, setTempDir, setBundledNode, findClaudeBinary };

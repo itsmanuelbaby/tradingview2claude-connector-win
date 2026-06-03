@@ -959,6 +959,13 @@ app.whenReady().then(async () => {
   // (più stabile di TEMP, mai pulita dal sistema, sempre scrivibile).
   try { claudeEngine.setTempDir(app.getPath('userData')); } catch (_) {}
 
+  // Node.js bundled — usato su Windows per spawnare DIRETTAMENTE cli.js
+  // senza passare per cmd.exe (che rompe il quoting dei prompt multiline).
+  try {
+    const bn = getBundledNodePath();
+    if (bn) claudeEngine.setBundledNode(bn);
+  } catch (_) {}
+
   // Flusso di avvio: dashboard SOLO se licenza valida E setup completo
   // (Claude installato + MCP registrato + utente loggato a Claude).
   // Se manca il login (token revocato, logout, ecc.) torna in setup
