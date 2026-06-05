@@ -300,8 +300,17 @@ function ask(userMessage, handlers) {
       // CreateProcess passa args via argv → multiline e accenti preservati.
       // claude.cmd è solo un wrapper bat che chiama node + cli.js;
       // bypassiamo il wrapper.
+      //
+      // CRUCIALE: il PROMPT viaggia via STDIN, non come argomento.
+      // `claude -p` (senza valore) legge il prompt da stdin. Passare il
+      // prompt come arg falliva perché:
+      //  - con cmd.exe i newline terminano il comando (prompt troncato)
+      //  - prompt+persona+memoria può sforare il limite lunghezza command-line
+      //    di Windows (8KB via cmd, 32KB via CreateProcess)
+      // Via stdin il prompt è di lunghezza ILLIMITATA e non subisce escaping.
+      // La persona (~5KB) resta come arg: piccola, sicura via CreateProcess.
       const args = [
-        '-p', prompt,
+        '-p',
         '--output-format', 'stream-json',
         '--verbose',
         '--model', currentModel,
@@ -362,7 +371,7 @@ function ask(userMessage, handlers) {
       }
       // Se .exe: spawn diretto del binario, niente da fare
 
-      log(`SPAWN exec: ${execTarget}`);
+      log(`SPAWN exec: ${execTarget} (prompt via stdin, ${Buffer.byteLength(prompt, 'utf8')}b)`);
       child = spawn(execTarget, execArgs, {
         cwd: HOME,
         env: buildEnv(),
@@ -370,9 +379,15 @@ function ask(userMessage, handlers) {
         windowsHide: true,
       });
 
-      // Chiudiamo stdin: senza prompt valido Claude aspetta stdin 3s
-      // e potrebbe entrare in interactive mode. Forziamo EOF immediato.
-      try { child.stdin.end(); } catch (_) {}
+      // Scrivi il PROMPT su stdin in UTF-8 e chiudi (EOF).
+      // Questo è ciò che fa funzionare l'analisi su Windows: claude -p
+      // legge il prompt da qui invece che da un argomento maciullato.
+      try {
+        child.stdin.write(prompt, 'utf8');
+        child.stdin.end();
+      } catch (e) {
+        log(`ERRORE scrittura stdin: ${e.message}`);
+      }
     } else {
       // ── macOS / Linux ────────────────────────────────────────────
       // spawn diretto: niente shell di mezzo, args passati raw al processo.
