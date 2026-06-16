@@ -31,35 +31,52 @@ Write-Host "  +================================================+" -ForegroundCol
 Write-Host "  |     TradingView2Claude Connector — Installer    |" -ForegroundColor DarkYellow
 Write-Host "  +================================================+" -ForegroundColor DarkYellow
 
-# ── 0. Disinstallazione versione precedente (se presente) ───────
-# Garantisce che il cliente esegua davvero la nuova build, senza
-# rischio di mix tra vecchia e nuova.
-# Licenza, vault Obsidian e config Claude restano intatti
-# (vivono in %USERPROFILE%\, non nella cartella programmi).
-$AppName = 'TradingView2Claude Connector'
-$InstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
-$Uninstaller = Join-Path $InstallDir "Uninstall $AppName.exe"
+# ── 0. Rimozione COMPLETA di QUALSIASI versione precedente ──────
+# Garantisce che il cliente esegua davvero la nuova build. Rimuove anche
+# versioni vecchie con disinstallatore CORROTTO (NSIS integrity error),
+# bypassandolo: chiude i processi, esegue l'uninstaller se valido, poi
+# forza la rimozione cartelle + voci di registro corrotte.
+# Licenza, vault Obsidian e config Claude restano intatti (vivono in
+# %USERPROFILE%\, non nella cartella programmi).
+Write-Step "Rimozione di eventuali versioni precedenti..."
 
-$running = Get-Process -Name 'TradingView2Claude*' -ErrorAction SilentlyContinue
-if ($running -or (Test-Path $InstallDir)) {
-  Write-Step "Rimozione versione precedente..."
-  if ($running) {
-    Write-Host "  Chiusura app in esecuzione..."
-    $running | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+# 1) Chiudi TUTTI i processi del programma (qualsiasi versione)
+Get-Process -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -like '*TradingView2Claude*' -or $_.Name -like '*tradingview2claude*' } |
+  Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+
+# 2) Prova gli uninstaller NSIS validi (silent). Se corrotti, si ignora.
+Get-ChildItem "$env:LOCALAPPDATA\Programs" -Directory -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -like '*tradingview2claude*' -or $_.Name -like '*TradingView2Claude*' } |
+  ForEach-Object {
+    $unins = Get-ChildItem $_.FullName -Filter 'Uninstall*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($unins) {
+      try { Start-Process -FilePath $unins.FullName -ArgumentList '/S' -Wait -ErrorAction Stop } catch {}
+      Start-Sleep -Seconds 1
+    }
   }
-  if (Test-Path $Uninstaller) {
-    Write-Host "  Esecuzione uninstaller NSIS (silent)..."
-    Start-Process -FilePath $Uninstaller -ArgumentList '/S' -Wait -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-  }
-  # Fallback: rimuovi cartella residua (se uninstaller mancante o fallito)
-  if (Test-Path $InstallDir) {
-    Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
-  }
-  Write-Ok "Versione precedente rimossa."
-  Write-Host "  (Licenza, memoria e login Claude preservati)" -ForegroundColor DarkGray
+
+# 3) Forza rimozione cartelle residue (anche se l'uninstaller è corrotto)
+Get-ChildItem "$env:LOCALAPPDATA\Programs" -Directory -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -like '*tradingview2claude*' -or $_.Name -like '*TradingView2Claude*' } |
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+# 4) Rimuovi le voci di disinstallazione corrotte dal registro: senza questo,
+#    l'installer NSIS della nuova versione prova a usare il vecchio
+#    uninstaller corrotto e fallisce con 'integrity check has failed'.
+@(
+  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+  'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+  'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+) | ForEach-Object {
+  Get-ChildItem $_ -ErrorAction SilentlyContinue |
+    Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DisplayName -like '*TradingView2Claude*' } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+Write-Ok "Pulizia versioni precedenti completata."
+Write-Host "  (Licenza, memoria e login Claude preservati)" -ForegroundColor DarkGray
 
 # ── 1. Prepara la cartella temporanea ────────────────────────────
 Write-Step "Preparazione..."
