@@ -70,6 +70,16 @@ function setBundledNode(p) {
   if (p && typeof p === 'string' && fs.existsSync(p)) BUNDLED_NODE = p;
 }
 
+// Path a un file mcp-config DEDICATO (solo tradingview-mcp). Usato con
+// --strict-mcp-config per ISOLARE il nostro MCP dalla config Claude personale
+// del cliente: senza isolamento, gli altri MCP server / skill dell'utente
+// possono interferire e impedire al nostro server di esporre i tool
+// ("connesso ma senza tool"). Impostato da main.js all'avvio.
+let MCP_CONFIG_PATH = null;
+function setMcpConfigPath(p) {
+  if (p && typeof p === 'string' && fs.existsSync(p)) MCP_CONFIG_PATH = p;
+}
+
 // ── Log diagnostico ──────────────────────────────────────────────
 function log(msg) {
   try {
@@ -316,6 +326,12 @@ function ask(userMessage, handlers) {
         '--model', currentModel,
         '--allowedTools', 'mcp__tradingview-mcp__*,WebSearch',
       ];
+      // ISOLAMENTO MCP: usa SOLO il nostro tradingview-mcp dal file dedicato,
+      // ignorando gli MCP server / config personali del cliente che possono
+      // impedire al nostro server di esporre i tool.
+      if (MCP_CONFIG_PATH) {
+        args.push('--strict-mcp-config', '--mcp-config', MCP_CONFIG_PATH);
+      }
       if (sessionId) args.push('--resume', sessionId);
       if (persona.trim()) args.push('--append-system-prompt', persona);
 
@@ -399,6 +415,10 @@ function ask(userMessage, handlers) {
         '--model', currentModel,
         '--allowedTools', 'mcp__tradingview-mcp__*,WebSearch',
       ];
+      // ISOLAMENTO MCP (stesso motivo del branch Windows)
+      if (MCP_CONFIG_PATH) {
+        args.push('--strict-mcp-config', '--mcp-config', MCP_CONFIG_PATH);
+      }
       if (sessionId) args.push('--resume', sessionId);
       if (persona.trim()) args.push('--append-system-prompt', persona);
 
@@ -524,4 +544,4 @@ function reset() {
   log('Sessione azzerata');
 }
 
-module.exports = { ask, reset, setModel, setLang, setTempDir, setBundledNode, findClaudeBinary };
+module.exports = { ask, reset, setModel, setLang, setTempDir, setBundledNode, setMcpConfigPath, findClaudeBinary };

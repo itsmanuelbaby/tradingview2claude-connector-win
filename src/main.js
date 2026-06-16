@@ -74,6 +74,38 @@ function getBundledNodePath() {
   return fs.existsSync(nodeBin) ? nodeBin : null;
 }
 
+// ── Genera mcp-config DEDICATO (solo tradingview-mcp) ────────────
+// Scrive un JSON che definisce SOLO il nostro server MCP, puntando al node
+// bundled + server.js. Usato con --strict-mcp-config per isolare il nostro
+// MCP dalla config Claude personale del cliente. Ritorna il path del file.
+function writeDedicatedMcpConfig() {
+  const mcpDir   = getBundledMcpPath();
+  const serverJs = path.join(mcpDir, 'src', 'server.js');
+  const nodeBin  = getBundledNodePath() || 'node';
+  if (!fs.existsSync(serverJs)) {
+    writeLog(`[mcp-config] server.js non trovato: ${serverJs}`);
+    return null;
+  }
+  // command/args separati: claude li passa allo spawn senza shell → gli spazi
+  // nei path (es. "TradingView2Claude Connector") sono gestiti correttamente.
+  const cfg = {
+    mcpServers: {
+      'tradingview-mcp': {
+        type: 'stdio',
+        command: nodeBin,
+        args: [serverJs],
+      },
+    },
+  };
+  const outPath = path.join(app.getPath('userData'), 'tv2claude-mcp.json');
+  try {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  } catch (_) {}
+  fs.writeFileSync(outPath, JSON.stringify(cfg, null, 2), 'utf8');
+  writeLog(`[mcp-config] scritto: ${outPath} (node=${nodeBin}, server=${serverJs})`);
+  return outPath;
+}
+
 // ── Helper: run processo ─────────────────────────────────────────
 function run(cmd, args = [], opts = {}) {
   return new Promise((resolve, reject) => {
@@ -965,6 +997,15 @@ app.whenReady().then(async () => {
     const bn = getBundledNodePath();
     if (bn) claudeEngine.setBundledNode(bn);
   } catch (_) {}
+
+  // mcp-config DEDICATO + --strict-mcp-config: isola il nostro tradingview-mcp
+  // dalla config Claude personale del cliente (altri MCP server, skill, CLAUDE.md
+  // che possono impedire al nostro server di esporre i tool — "connesso ma senza
+  // tool"). Generiamo un JSON con SOLO il nostro server, puntando al node bundled.
+  try {
+    const cfgPath = writeDedicatedMcpConfig();
+    if (cfgPath) claudeEngine.setMcpConfigPath(cfgPath);
+  } catch (e) { writeLog('[mcp-config] errore: ' + e.message); }
 
   // Flusso di avvio: dashboard SOLO se licenza valida E setup completo
   // (Claude installato + MCP registrato + utente loggato a Claude).
